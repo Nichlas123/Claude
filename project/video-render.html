@@ -1,0 +1,2579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sirvoy — Booking flow loop</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; font-family: Inter, system-ui, sans-serif; overflow: hidden; }
+  /* Checkerboard so the user can SEE the transparent canvas while previewing.
+     The exporter draws onto a transparent canvas, so this never bleeds into the MP4. */
+  body {
+    background-color: #2a2a2a;
+    background-image:
+      linear-gradient(45deg, #3a3a3a 25%, transparent 25%),
+      linear-gradient(-45deg, #3a3a3a 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #3a3a3a 75%),
+      linear-gradient(-45deg, transparent 75%, #3a3a3a 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, 10px 0px;
+  }
+</style>
+<!-- Local vendor files for offline/headless rendering (no CDN required) -->
+</head>
+<body>
+<div id="root"></div>
+
+<script src="vendor/react.development.js"></script>
+<script src="vendor/react-dom.development.js"></script>
+<script src="vendor/babel.min.js"></script>
+<script src="vendor/html-to-image.js"></script>
+<script src="vendor/mp4-muxer.js"></script>
+
+<script type="text/babel" src="animations.jsx"></script>
+<script type="text/babel" src="shared.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+
+<script type="text/babel">
+const clampK = (t, start, end) => Math.max(0, Math.min(1, (t - start) / Math.max(0.0001, end - start)));
+const lerp = (a, b, k) => a + (b - a) * k;
+
+// Square 1080×1080 video frame with transparent background. The scene
+// content (booking flow) renders into a centered 670×920 portrait region
+// inside the 1080×1080 — leaving transparent margins on left, right, top,
+// and bottom so the asset can be composited on top of a hero background.
+//
+// The scene is authored in a 1080-wide design coord system that's been
+// extended vertically to 1080 × 1483 (preserves 670:920 aspect — i.e.
+// 1080 × (920/670) ≈ 1483). All existing layouts that were tuned against
+// SCENE = 1080 (square) live in the top 1080 of vertical design space;
+// SCENE_H = 1483 is the new vertical ceiling, used by anything that
+// needs to position relative to the bottom of the scene.
+// Visible scene content is capped at 668 wide; the surrounding STAGE is the
+// transparent canvas the exporter writes to. Height auto-grows from the
+// design aspect ratio so content isn't cropped.
+const SCENE_RENDERED_W = 668;
+const SCENE_RENDERED_H = 920;
+const STAGE_W = 1080;
+// Stage height grows if needed to fit the (possibly taller) scene with the
+// same vertical margin (~80) above and below.
+const STAGE_H = Math.max(1080, SCENE_RENDERED_H + 160);
+const SCENE = 1080;       // legacy alias — design coord WIDTH (kept so existing math works)
+const SCENE_W = 1080;     // design coord width
+const SCENE_H = Math.round(SCENE_W * SCENE_RENDERED_H / SCENE_RENDERED_W); // 1483 — design coord height
+const SCENE_SCALE = SCENE_RENDERED_W / SCENE_W; // ≈ 0.620
+const INNER_OFFSET_X = (STAGE_W - SCENE_RENDERED_W) / 2; // 205
+const INNER_OFFSET_Y = (STAGE_H - SCENE_RENDERED_H) / 2; // 80
+const INNER_W = SCENE_RENDERED_W;
+const INNER_H = SCENE_RENDERED_H;
+
+// Timeline (extended):
+// 0.0  – 3.2  Step 1  New Booking form → Search
+// 3.2  – 6.0  Step 2  Available rooms → +Single → Next
+// 6.0  – 8.5  Step 3  Add personal data form
+// 8.5  – 10.8 Step 4  Sidebar opens → click Bookings
+// 10.8 – 13.0 Step 5  Bookings list → click 26142
+// 13.0 – 15.5 Step 6  Booking 26142 detail
+// 16.0 – 18.1 Step 7  Sidebar reopens → click Statistics (extra dwell on the click)
+// 18.1 – 22.8 Step 8  Statistics dashboard (KPIs + charts)
+const DURATION = 22.8;
+
+const C = {
+  bg: '#FAF7F2',
+  card: '#FFFFFF',
+  cardSoft: '#F4F6F8',
+  text: '#0E2235',
+  mute: '#6A7A8C',
+  line: '#E4EBF2',
+  lineSoft: '#EDEEF0',
+  green: '#1E6E3E',
+  greenAccent: '#1FBF7A',
+  greenSoft: '#DBF5E9',
+  navy: '#0E2235',
+  sidebarBg: '#1F2937',  // matches screenshot
+  sidebarBgDark: '#1A2230',
+  orange: '#F87C56',
+  starGreen: '#1FBF7A',
+  starBlue: '#3A9DD6',
+  link: '#1B6478',
+};
+
+// ──────────────── Cursor ────────────────
+// Classic OS-style arrow pointer (the cursor people see in real screen
+// recordings): black fill, crisp white border, hot-spot at the very tip.
+// SVG is drawn so the tip sits at local (3, 3); we translate by (-3, -3)
+// so the rendered (x, y) IS the click point.
+const Cursor = ({ x, y, tap = false, opacity = 1 }) => (
+  <div style={{
+    position: 'absolute', left: x, top: y,
+    width: 28, height: 32, pointerEvents: 'none',
+    opacity,
+    zIndex: 300,
+  }}>
+    <div style={{
+      width: '100%', height: '100%',
+      transform: `translate(-3px, -3px) scale(${tap ? 0.86 : 1})`,
+      transformOrigin: '3px 3px',
+      transition: 'transform 0.10s cubic-bezier(0.4, 0, 0.2, 1)',
+      filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.35))',
+    }}>
+    <svg viewBox="0 0 28 32" width="28" height="32">
+      {/*
+        Macintosh-style arrow:
+        Tip at (3,3), slants down-right, hooks back at the bottom into a
+        short tail. Two paths: white "halo" (slightly outset) underneath a
+        black fill — gives the crisp double-stroke OS pointer look without
+        relying on stroke alignment quirks.
+      */}
+      <path
+        d="M 3 3
+           L 3 22.5
+           L 8.4 17.6
+           L 11.6 24.6
+           L 14.4 23.4
+           L 11.2 16.6
+           L 18.4 16.6
+           Z"
+        fill="white"
+        stroke="white"
+        strokeWidth="2.4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <path
+        d="M 3 3
+           L 3 22.5
+           L 8.4 17.6
+           L 11.6 24.6
+           L 14.4 23.4
+           L 11.2 16.6
+           L 18.4 16.6
+           Z"
+        fill="#0E2235"
+      />
+    </svg>
+    </div>
+  </div>
+);
+
+// ──────────────── Sidebar ────────────────
+// Icon set drawn as inline SVG so we get a single fill color we can swap on
+// active/hover (the original PNGs have a baked-in dark background and break
+// when filtered). All icons share a 24×24 viewBox; consumers control fill via
+// the wrapping <span style={{ color }}>.
+const Icon = ({ name }) => {
+  const common = { width: 32, height: 32, viewBox: '0 0 24 24', fill: 'currentColor' };
+  switch (name) {
+    case 'dashboard': // house
+      return (
+        <svg {...common}>
+          <path d="M12 3.2 3 10.5v9.3a1 1 0 0 0 1 1h5v-6.6h6V20.8h5a1 1 0 0 0 1-1v-9.3L12 3.2z" />
+        </svg>
+      );
+    case 'newbooking': // clipboard with check rows
+      return (
+        <svg {...common}>
+          <rect x="4" y="5" width="16" height="16" rx="2" />
+          <rect x="8" y="2.5" width="8" height="3.5" rx="1" fill="currentColor" />
+          <rect x="7.2" y="9" width="9.6" height="1.4" rx="0.7" fill="var(--icon-bg, #1A2530)" />
+          <rect x="7.2" y="12" width="9.6" height="1.4" rx="0.7" fill="var(--icon-bg, #1A2530)" />
+          <rect x="7.2" y="15" width="6"   height="1.4" rx="0.7" fill="var(--icon-bg, #1A2530)" />
+        </svg>
+      );
+    case 'bookings': // hotel / building w/ windows + door
+      return (
+        <svg {...common}>
+          <path d="M5 4h14a1 1 0 0 1 1 1v15.5h-6V17h-4v3.5H4V5a1 1 0 0 1 1-1z" />
+          <rect x="7"  y="6.8"  width="2.4" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+          <rect x="10.8" y="6.8" width="2.4" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+          <rect x="14.6" y="6.8" width="2.4" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+          <rect x="7"  y="10.8" width="2.4" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+          <rect x="14.6" y="10.8" width="2.4" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+        </svg>
+      );
+    case 'calendar':
+      return (
+        <svg {...common}>
+          <rect x="3.5" y="6" width="17" height="14" rx="1.6" />
+          <rect x="3.5" y="6" width="17" height="4" fill="currentColor" />
+          <rect x="6.5" y="3.5" width="1.6" height="4" rx="0.5" fill="currentColor" />
+          <rect x="15.9" y="3.5" width="1.6" height="4" rx="0.5" fill="currentColor" />
+          <rect x="6"  y="12" width="3" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+          <rect x="10.5" y="12" width="3" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+          <rect x="15"   y="12" width="3" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+          <rect x="6"  y="15.6" width="3" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+          <rect x="10.5" y="15.6" width="3" height="2.4" rx="0.4" fill="var(--icon-bg, #1A2530)" />
+        </svg>
+      );
+    case 'rates': // dollar in rounded square
+      return (
+        <svg {...common}>
+          <rect x="3.5" y="3.5" width="17" height="17" rx="3" />
+          <path d="M12 6.6v1.5c-1.6.05-2.7.95-2.7 2.3 0 1.4 1 2 2.7 2.5 1.2.35 1.6.65 1.6 1.2 0 .55-.5.95-1.5.95-1.05 0-1.65-.5-1.7-1.3H8.7c.05 1.5 1.05 2.5 2.6 2.7v1.55h1.4v-1.55c1.7-.15 2.7-1 2.7-2.4 0-1.45-.95-2.05-2.65-2.55-1.25-.4-1.65-.65-1.65-1.2 0-.5.45-.85 1.4-.85.95 0 1.55.45 1.6 1.2h1.6c-.05-1.4-1-2.3-2.5-2.5V6.6H12z" fill="var(--icon-bg, #1A2530)" />
+        </svg>
+      );
+    case 'rooms': // key
+      return (
+        <svg {...common}>
+          <circle cx="8.5" cy="12" r="4.2" fill="none" stroke="currentColor" strokeWidth="2" />
+          <path d="M12.7 12h7.6M17 12v3M19.7 12v2.4" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
+          <circle cx="8.5" cy="12" r="1.1" fill="currentColor" />
+        </svg>
+      );
+    case 'guests': // group of 3 people
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="8.5" r="2.6" />
+          <path d="M6.5 18.5c.4-2.6 2.7-4.4 5.5-4.4s5.1 1.8 5.5 4.4z" />
+          <circle cx="5"  cy="10" r="2.1" />
+          <path d="M2.2 17c.2-1.7 1.4-2.9 3-3.1" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          <circle cx="19" cy="10" r="2.1" />
+          <path d="M21.8 17c-.2-1.7-1.4-2.9-3-3.1" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+      );
+    case 'payments': // receipt with $ and pen
+      return (
+        <svg {...common}>
+          <path d="M5 3.5h11l3 3v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1z" />
+          <path d="M16 3.5v3h3" fill="var(--icon-bg, #1A2530)" />
+          <path d="M11 9.5v1c-1.1.05-1.9.7-1.9 1.7 0 1 .7 1.4 1.9 1.75.85.25 1.15.45 1.15.85 0 .4-.4.7-1.05.7-.7 0-1.15-.35-1.2-.9H8.7c.05 1.05.75 1.75 1.85 1.9V17h1v-1.45c1.2-.1 1.9-.7 1.9-1.7 0-1.05-.65-1.45-1.85-1.8-.9-.3-1.2-.45-1.2-.85 0-.35.3-.6 1-.6.65 0 1.05.3 1.1.85h1.15c-.05-1-.7-1.65-1.75-1.8V9.5h-1z" fill="var(--icon-bg, #1A2530)" />
+        </svg>
+      );
+    case 'channels': // network: hub with 3 spokes
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="5.5" r="2" fill="currentColor" />
+          <circle cx="5.5" cy="17" r="2" fill="currentColor" />
+          <circle cx="18.5" cy="17" r="2" fill="currentColor" />
+          <circle cx="12" cy="12" r="2.4" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M12 7.5v2M10.3 13.4l-3 2.4M13.7 13.4l3 2.4" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" />
+        </svg>
+      );
+    case 'invoicing': // document with $
+      return (
+        <svg {...common}>
+          <path d="M6 2.5h8l4 4v14.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-17.5a1 1 0 0 1 1-1z" />
+          <path d="M14 2.5v4h4" fill="var(--icon-bg, #1A2530)" />
+          <path d="M11.5 9.5v1c-1.1.05-1.9.7-1.9 1.7 0 1 .7 1.4 1.9 1.75.85.25 1.15.45 1.15.85 0 .4-.4.7-1.05.7-.7 0-1.15-.35-1.2-.9H9.2c.05 1.05.75 1.75 1.85 1.9V17h1v-1.45c1.2-.1 1.9-.7 1.9-1.7 0-1.05-.65-1.45-1.85-1.8-.9-.3-1.2-.45-1.2-.85 0-.35.3-.6 1-.6.65 0 1.05.3 1.1.85h1.15c-.05-1-.7-1.65-1.75-1.8V9.5h-1z" fill="var(--icon-bg, #1A2530)" />
+        </svg>
+      );
+    case 'statistics': // bar chart
+      return (
+        <svg {...common}>
+          <rect x="4"  y="13" width="3.2" height="7" rx="0.6" />
+          <rect x="10.4" y="9" width="3.2" height="11" rx="0.6" />
+          <rect x="16.8" y="5" width="3.2" height="15" rx="0.6" />
+        </svg>
+      );
+    case 'settings': // gear
+      return (
+        <svg {...common}>
+          <path d="M19.4 13l1.9-1.4-1.9-3.3-2.3.7c-.55-.45-1.15-.8-1.8-1L14.7 5.5h-3.4l-.6 2.5c-.65.2-1.25.55-1.8 1l-2.3-.7L4.7 11.6 6.6 13c-.05.35-.1.7-.1 1s.05.65.1 1l-1.9 1.4 1.9 3.3 2.3-.7c.55.45 1.15.8 1.8 1l.6 2.5h3.4l.6-2.5c.65-.2 1.25-.55 1.8-1l2.3.7 1.9-3.3-1.9-1.4c.05-.35.1-.7.1-1s-.05-.65-.1-1z" />
+          <circle cx="13" cy="14" r="2.4" fill="var(--icon-bg, #1A2530)" />
+        </svg>
+      );
+    default: return null;
+  }
+};
+
+// Order matches the user's screenshot: Dashboard, New bookings, Bookings, Calendar, Rates, Rooms, Guests, Payments, Invoicing, Statistics
+const SIDEBAR_ITEMS = [
+  { id: 'dashboard',  label: 'Dashboard',    icon: 'dashboard'  },
+  { id: 'newbooking', label: 'New bookings', icon: 'newbooking' },
+  { id: 'bookings',   label: 'Bookings',     icon: 'bookings'   },
+  { id: 'calendar',   label: 'Calendar',     icon: 'calendar'   },
+  { id: 'rates',      label: 'Rates',        icon: 'rates'      },
+  { id: 'rooms',      label: 'Rooms',        icon: 'rooms'      },
+  { id: 'channels',   label: 'Channels',     icon: 'channels'   },
+  { id: 'guests',     label: 'Guests',       icon: 'guests'     },
+  { id: 'payments',   label: 'Payments',     icon: 'payments'   },
+  { id: 'invoicing',  label: 'Invoicing',    icon: 'invoicing'  },
+  { id: 'statistics', label: 'Statistics',   icon: 'statistics' },
+];
+
+// Geometry used for cursor alignment
+const SB_W = 360;
+const SB_HEADER_H = 130;     // logo + name placeholders
+const SB_HPAD = 22;
+const SB_ITEM_H = 60;
+const SB_ITEM_GAP = 3;
+const sidebarItemY = (idx) => SB_HEADER_H + idx * (SB_ITEM_H + SB_ITEM_GAP) + SB_ITEM_H / 2;
+
+// ──────────────── Save confirmation toast ────────────────
+// Floats in from the top after "Save booking" is pressed, holds, then fades.
+// k: 0..1 visibility (caller drives it as inK*outK).
+const SaveToast = ({ k }) => {
+  if (k <= 0.001) return null;
+  // Two-phase ease: first 30% pops down + scales up, last 30% fades up.
+  const slide = Math.min(1, k * 2);   // arrives quickly
+  const fade  = k;                     // overall opacity
+  return (
+    <div style={{
+      position: 'absolute',
+      top: 80,
+      left: '50%',
+      transform: `translate(-50%, ${(1 - slide) * -48}px) scale(${0.94 + 0.06 * slide})`,
+      opacity: fade,
+      zIndex: 200,
+      pointerEvents: 'none',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 22,
+        padding: '24px 36px 24px 28px',
+        background: 'white',
+        border: `1px solid ${C.line}`,
+        borderRadius: 22,
+        boxShadow: '0 24px 64px rgba(14,34,53,0.18), 0 4px 12px rgba(14,34,53,0.08)',
+        minWidth: 560,
+      }}>
+        {/* Animated check circle */}
+        <div style={{
+          width: 64, height: 64, borderRadius: '50%',
+          background: C.greenAccent,
+          display: 'grid', placeItems: 'center',
+          flexShrink: 0,
+          boxShadow: `0 0 0 ${10 * (1 - slide)}px rgba(31,191,122,0.25)`,
+        }}>
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none">
+            <path d="M5 12.5l4.5 4.5L19 7"
+                  stroke="white" strokeWidth="2.8"
+                  strokeLinecap="round" strokeLinejoin="round"
+                  strokeDasharray="24"
+                  strokeDashoffset={24 * (1 - Math.min(1, slide * 1.4))} />
+          </svg>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 30, fontWeight: 700, color: C.text, letterSpacing: -0.3 }}>
+            Booking saved
+          </div>
+          <div style={{ fontSize: 20, color: C.mute, fontWeight: 500 }}>
+            Booking #26142 · Noah Adams
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Sidebar = ({ activeId, hoveredId, slideK, introT = -1 }) => {
+  // Per-item pop intro: each item pulses (scale + brightness) in sequence
+  // when the menu first opens. Stagger 0.07s, individual pop runs 0.32s.
+  const POP_STAGGER = 0.07;
+  const POP_DUR = 0.32;
+  const itemPopK = (idx) => {
+    if (introT < 0) return 0;
+    const start = idx * POP_STAGGER;
+    const t = introT - start;
+    if (t <= 0 || t >= POP_DUR) return 0;
+    // bell curve: 0 → peak at 0.4 → 0
+    const k = t / POP_DUR;
+    return Math.sin(k * Math.PI);
+  };
+  return (
+    <div style={{
+      position: 'absolute',
+      left: STEP_PAD,
+      top: STEP_BOX_TOP + STEP_PAD,
+      // Sidebar collapses to its menu items' natural height (top-anchored,
+      // matching the cards which also fit-to-content).
+      height: 'auto',
+      width: SB_W,
+      background: C.sidebarBg,
+      transform: `translateX(${(slideK - 1) * (SB_W + STEP_PAD)}px)`,
+      boxShadow: slideK > 0.05 ? '24px 0 60px rgba(0,0,0,0.30)' : 'none',
+      transition: 'box-shadow 0.3s',
+      zIndex: 50,
+      display: 'flex', flexDirection: 'column',
+      paddingTop: 28,
+      paddingBottom: 28,
+      overflow: 'hidden',
+    }}>
+      {/* Logo + hotel name placeholder */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 16,
+        padding: `0 ${SB_HPAD}px`,
+        marginBottom: 26,
+      }}>
+        {/* Sirvoy logo */}
+        <div style={{
+          width: 56, height: 56, borderRadius: 11,
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}>
+          <img src="channels/sirvoy-logo.svg" alt="Sirvoy"
+            style={{ width: '100%', height: '100%', display: 'block' }} />
+        </div>
+        {/* placeholder name bars */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+          <div style={{ height: 11, width: 140, borderRadius: 6, background: 'rgba(255,255,255,0.18)' }} />
+          <div style={{ height: 11, width: 96, borderRadius: 6, background: 'rgba(255,255,255,0.13)' }} />
+        </div>
+      </div>
+
+      {/* Menu items */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: SB_ITEM_GAP, padding: `0 ${SB_HPAD}px` }}>
+        {SIDEBAR_ITEMS.map((it, idx) => {
+          const isActive = activeId === it.id;
+          const isHover  = hoveredId === it.id && !isActive;
+          const popK     = itemPopK(idx);                       // 0..1 bell, 0 outside window
+          const scale    = 1 + popK * 0.04;
+          const popBg    = popK > 0 && !isActive
+            ? `rgba(255,255,255,${0.10 + popK * 0.10})`
+            : null;
+          return (
+            <div key={it.id} data-cursor-target={`sb-${it.id}`} style={{
+              display: 'flex', alignItems: 'center', gap: 16,
+              height: SB_ITEM_H,
+              padding: '0 16px',
+              borderRadius: 11,
+              background: isActive ? '#FFFFFF' : popBg || (isHover ? 'rgba(255,255,255,0.08)' : 'transparent'),
+              transition: 'background 0.25s, transform 0.25s, box-shadow 0.25s',
+              boxShadow: isActive
+                ? '0 3px 10px rgba(0,0,0,0.18)'
+                : popK > 0 ? `0 4px 14px rgba(31,191,122,${popK * 0.18})` : 'none',
+              transform: isHover && !isActive
+                ? `translateX(4px) scale(${scale})`
+                : `scale(${scale})`,
+            }}>
+              <span style={{
+                width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: isActive ? '#1A2530' : '#FFFFFF',
+                opacity: 1,
+                // Cutouts inside icons read this var so they match the pill bg
+                ['--icon-bg']: isActive ? '#FFFFFF' : C.sidebarBg,
+                transition: 'color 0.25s',
+                transform: `scale(${1 + popK * 0.10})`,
+              }}><Icon name={it.icon} /></span>
+              <span style={{
+                fontSize: 19, fontWeight: isActive ? 700 : (popK > 0.3 ? 700 : 500),
+                letterSpacing: -0.2,
+                color: isActive
+                  ? C.text
+                  : popK > 0
+                    ? `rgba(255, 255, 255, ${0.55 + popK * 0.45})`
+                    : 'rgba(255,255,255,0.55)',
+                transition: 'color 0.25s',
+              }}>{it.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// ──────────────── Tweaks Context ────────────────
+const TweaksContext = React.createContext({ single: '', double: '', queen: '' });
+
+// ──────────────── Step container ────────────────
+// Steps fill the full 1080 × SCENE_H (1483) portrait scene so the rendered
+// card fills the 670×920 region. STEP_BOX_TOP/H kept as aliases (== 0/SCENE_H)
+// so any references downstream still resolve.
+const STEP_PAD = 60;
+const STEP_BOX_H = SCENE_H;
+const STEP_BOX_TOP = 0;
+
+const StepFrame = ({ visible, transform, children, soft = false, fit = false, minH = null }) => (
+  <div style={{
+    position: 'absolute',
+    left: 0, right: 0,
+    top: 0,
+    height: SCENE_H,
+    padding: STEP_PAD,
+    opacity: visible,
+    boxSizing: 'border-box',
+    // Cards collapse to content height (top-anchored). Removes the dead
+    // whitespace below short steps; the transparent area below the card
+    // blends into the hero background.
+    display: 'flex',
+    alignItems: 'flex-start',
+  }}>
+    <div style={{
+      width: '100%',
+      height: 'auto',
+      minHeight: minH || undefined,
+      background: soft ? C.cardSoft : 'white',
+      borderRadius: 28,
+      boxShadow: '0 24px 60px rgba(14,34,53,0.10), 0 6px 18px rgba(14,34,53,0.06)',
+      border: `1px solid ${C.line}`,
+      transform,
+      overflow: 'hidden',
+      boxSizing: 'border-box',
+      position: 'relative',
+    }}>
+      {children}
+    </div>
+  </div>
+);
+
+// ──────────────── Step 1+2: New Booking → Available Rooms (single page) ────────────────
+// The New Booking form stays at the top of the page. After Search is tapped,
+// the Available Rooms panel expands open BELOW the form like a dropdown,
+// and the page scrolls down to bring the rooms into view.
+const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
+  const roomImages = React.useContext(TweaksContext);
+  const inK = clampK(t, 0.0, 0.4);
+
+  // Form
+  const fillStart = [0.4, 0.7, 1.0, 1.3];
+  const fields = [
+    { label: 'Check-in',         w: '70%' },
+    { label: 'Check-out',        w: '70%' },
+    { label: 'Category',         w: '55%' },
+    { label: 'Number of guests', w: '40%' },
+  ];
+  const searchPulse = t > 2.7 && t < 2.95;
+
+  // Rooms — local time (matches old Step2 t which was lt - T.s2Start = lt - 3.2)
+  const roomT = t - 3.2;
+  const rooms = [
+    { name: 'Single room', price: '€148',  beds: '1 single bed',  id: 'single', img: roomImages.single || 'channels/room-single.jpg' },
+    { name: 'Double room', price: '€198',  beds: '1 double bed',  id: 'double', img: roomImages.double || 'channels/room-double.jpg' },
+    { name: 'Queen room',  price: '€244',  beds: '1 queen bed',   id: 'queen',  img: roomImages.queen  || 'channels/room-queen.jpg' },
+  ];
+  const plusPulse = roomT > 1.4 && roomT < 1.6;
+  const added     = addedOverride || roomT > 1.65;
+  // Room picker (appears inside Single room card after +): expand → open dropdown →
+  // hover Room 1 → tap → close → label updates to "Room 1 (Cleaned)".
+  const pickerExpand   = clampK(roomT, 1.75, 2.05);             // row slides into existence
+  const dropdownOpenK  = clampK(roomT, 2.5, 2.7) * (1 - clampK(roomT, 3.05, 3.2)); // open then close
+  const dropdownTapPulse = roomT > 2.45 && roomT < 2.65;        // press on the select
+  const optionHoverIdx = (roomT > 2.75 && roomT < 3.0) ? 0 : -1; // hover Room 1
+  const optionTapPulse = roomT > 3.0 && roomT < 3.18;           // tap Room 1
+  const roomPicked     = roomT > 3.05;                          // label shows Room 1 (Cleaned)
+  const totalK    = clampK(roomT, 3.4, 3.8);
+
+  // Dropdown reveal: 0 = collapsed, 1 = fully expanded — no page scroll, the
+  // form stays anchored at the top and the rooms panel grows into the remaining
+  // space below it.
+  const dropK = clampK(t, 3.15, 3.8);
+  const dropEased = dropK * dropK * (3 - 2 * dropK);
+  const ROOMS_H = 540; // expanded height of Available rooms panel (fits below form + above total bar)
+  const dropH = ROOMS_H * dropEased;
+
+  return (
+    <StepFrame fit visible={visible} transform={`translateY(${(1 - inK) * 22}px) scale(${0.98 + 0.02 * inK})`}>
+      {/* ── New Booking form (anchored at top, stays put) ── */}
+      <div style={{ padding: '36px 56px 0' }}>
+        <div style={{ fontSize: 42, fontWeight: 800, color: C.text, letterSpacing: -1, marginBottom: 18 }}>
+          New Booking
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          {fields.map((f, i) => {
+            const k = clampK(t, fillStart[i], fillStart[i] + 0.3);
+            return (
+              <div key={i} style={{
+                border: `2px solid ${C.line}`, borderRadius: 12,
+                padding: '14px 18px',
+              }}>
+                <div style={{ fontSize: 18, fontWeight: 600, color: C.text, marginBottom: 8 }}>{f.label}</div>
+                <div style={{
+                  height: 10, borderRadius: 4, background: C.lineSoft, width: f.w,
+                  overflow: 'hidden', position: 'relative',
+                }}>
+                  <div style={{
+                    position: 'absolute', inset: 0, background: '#D5D9DE',
+                    transform: `scaleX(${k})`, transformOrigin: 'left',
+                  }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{
+          marginTop: 16, height: 60, borderRadius: 12,
+          background: C.green, color: 'white',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontWeight: 700, fontSize: 22,
+          transform: `scale(${searchPulse ? 0.97 : 1})`,
+          transition: 'transform 0.1s',
+          boxShadow: searchPulse ? '0 0 0 8px rgba(30,110,62,0.18)' : '0 6px 18px rgba(30,110,62,0.20)',
+        }} data-cursor-target="step1-search">Search</div>
+      </div>
+
+      {/* ── Available Rooms — expanding dropdown panel below the form ── */}
+      <div style={{
+        margin: '20px 56px 0',
+        background: C.cardSoft || '#F7F4EE',
+        borderRadius: 16,
+        border: `1px solid ${C.line}`,
+        height: dropH,
+        // Hide while sliding open; show once expanded so the room-picker dropdown
+        // can pop out without being clipped.
+        overflow: dropEased >= 0.999 ? 'visible' : 'hidden',
+        opacity: dropEased,
+      }}>
+        <div style={{ padding: '20px 24px 16px', minWidth: 800 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 26, fontWeight: 800, color: C.text, letterSpacing: -0.6 }}>
+                Available rooms
+              </div>
+              <div style={{ fontSize: 14, color: C.mute, fontWeight: 500, marginTop: 2 }}>
+                3 options · Thu 14 Oct → Fri 15 Oct · 1 night
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, position: 'relative' }}>
+            {rooms.map((r, i) => {
+              const ap = clampK(roomT, 0.4 + i * 0.16, 0.8 + i * 0.16);
+              const isSingle = i === 0;
+              // Picker row sits inside the Single room card and grows from
+              // 0 → ~70 px after the + has been clicked.
+              const pickerH = isSingle ? 64 * pickerExpand : 0;
+              return (
+                <div key={r.id} style={{
+                  opacity: ap,
+                  transform: `translateY(${(1 - ap) * 12}px)`,
+                  // Lift Single room above its siblings so the open dropdown
+                  // popover paints over the Double / Queen rows beneath it.
+                  position: 'relative',
+                  zIndex: isSingle ? 5 : 1,
+                }}>
+                  <div style={{
+                    borderRadius: 12,
+                    background: 'white',
+                    border: `2px solid ${isSingle && added ? C.greenAccent : C.line}`,
+                    boxShadow: isSingle && added ? `0 0 0 3px ${C.greenSoft}` : 'none',
+                    transition: 'border-color 0.4s',
+                    overflow: 'visible',
+                  }}>
+                    {/* Main room row */}
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 16,
+                      padding: 12,
+                    }}>
+                      <img src={r.img} alt={r.name} style={{
+                        width: 96, height: 70, borderRadius: 8, flexShrink: 0,
+                        objectFit: 'cover', display: 'block',
+                      }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: 20, color: C.text, letterSpacing: -0.3 }}>{r.name}</div>
+                        <div style={{ fontSize: 13, color: C.mute, fontWeight: 500, marginTop: 1 }}>{r.beds}</div>
+                      </div>
+                      <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginRight: 8, whiteSpace: 'nowrap' }}>
+                        {r.price} <span style={{ fontSize: 12, color: C.mute, fontWeight: 500 }}>/ night</span>
+                      </div>
+                      <div style={{
+                        width: 48, height: 48, borderRadius: '50%',
+                        background: isSingle && added ? C.greenAccent : C.navy,
+                        color: 'white',
+                        display: 'grid', placeItems: 'center',
+                        fontSize: 24, fontWeight: 400, lineHeight: 1,
+                        transform: `scale(${isSingle && plusPulse ? 0.85 : 1})`,
+                        transition: 'background 0.4s, transform 0.12s',
+                        boxShadow: isSingle && plusPulse ? '0 0 0 8px rgba(248,124,86,0.18)' : 'none',
+                        flexShrink: 0,
+                      }} {...(isSingle ? { 'data-cursor-target': 'step2-plus' } : {})}>
+                        {isSingle && added ? (
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                            <path d="m5 12 5 5L20 7" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        ) : '+'}
+                      </div>
+                    </div>
+
+                    {/* Room picker row — appears for Single room after + click */}
+                    {isSingle && (
+                      <div style={{
+                        height: pickerH,
+                        overflow: 'visible',
+                        opacity: pickerExpand,
+                        transition: 'height 0.2s',
+                        position: 'relative',
+                      }}>
+                        <div style={{
+                          borderTop: `1px solid ${C.line}`,
+                          padding: '12px 14px',
+                          display: 'flex', alignItems: 'center', gap: 16,
+                        }}>
+                          <div style={{ fontSize: 16, fontWeight: 600, color: C.text, minWidth: 60 }}>Room</div>
+                          {/* Select button */}
+                          <div style={{
+                            flex: 1,
+                            height: 40, borderRadius: 8,
+                            border: `1.5px solid ${C.line}`,
+                            background: 'white',
+                            padding: '0 14px',
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            fontSize: 16, fontWeight: 500,
+                            color: roomPicked ? C.text : C.mute,
+                            transform: `scale(${dropdownTapPulse ? 0.99 : 1})`,
+                            transition: 'transform 0.1s',
+                            boxShadow: dropdownTapPulse ? `0 0 0 4px ${C.greenSoft}` : 'none',
+                            position: 'relative',
+                          }} data-cursor-target="step2-room-select">
+                            <span>{roomPicked ? 'Room 1 (Cleaned)' : 'Choose room…'}</span>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{
+                              transform: `rotate(${dropdownOpenK > 0.4 ? 180 : 0}deg)`,
+                              transition: 'transform 0.2s',
+                            }}>
+                              <path d="m6 9 6 6 6-6" stroke={C.mute} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Dropdown popover — rendered as a sibling of the room cards (not nested
+                inside the Single card) so html-to-image's MP4 export doesn't clip it
+                against neighbouring cards' z-stack. Position is hand-tuned to sit
+                directly under the Room select button. */}
+            {dropdownOpenK > 0.02 && (
+              <div style={{
+                position: 'absolute',
+                // Column inner padding-left = 24, picker label width 60 + gap 16 = 76,
+                // plus row inner padding-left 14 \u2192 24+14+76 = 114 from panel left.
+                left: 114,
+                // panel-inner padding 20 + header (\u224852) + 14mb + Single card border 2 +
+                // main row 94 + picker border 1 + padding-top 12. Drop list opens
+                // aligned with the top of the select button (overlays it) so the
+                // options sit at the same vertical level as the "Choose room" row
+                // instead of floating down across the Double / Queen cards.
+                top: 20 + 52 + 14 + 2 + 94 + 1 + 12,
+                width: 540,
+                background: '#3D434B',
+                borderRadius: 10,
+                boxShadow: '0 12px 32px rgba(14,34,53,0.28)',
+                padding: 6,
+                opacity: dropdownOpenK,
+                transform: `translateY(${(1 - dropdownOpenK) * -6}px)`,
+                zIndex: 50,
+                overflow: 'hidden',
+              }}>
+                {[
+                  { label: 'Room 1 (Cleaned)',    idx: 0 },
+                  { label: 'Room 2 (Not Cleaned)', idx: 1 },
+                ].map((o) => {
+                  const isHover = optionHoverIdx === o.idx;
+                  const isTap   = optionTapPulse && o.idx === 0;
+                  return (
+                    <div key={o.idx}
+                      {...(o.idx === 0 ? { 'data-cursor-target': 'step2-room-option1' } : {})}
+                      style={{
+                        padding: '10px 14px',
+                        borderRadius: 7,
+                        background: isTap ? 'rgba(255,255,255,0.18)' : (isHover ? 'rgba(255,255,255,0.10)' : 'transparent'),
+                        color: 'white',
+                        fontSize: 16, fontWeight: 500,
+                        transition: 'background 0.12s',
+                      }}>{o.label}</div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Total bar — fixed to bottom of frame */}
+      <div style={{
+        position: 'absolute', left: 0, right: 0, bottom: 0,
+        height: 84,
+        background: 'white',
+        borderTop: `1px solid ${C.line}`,
+        padding: '0 48px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        transform: `translateY(${(1 - totalK) * 84}px)`,
+        opacity: totalK,
+        boxShadow: '0 -8px 24px rgba(14,34,53,0.06)',
+      }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.mute, textTransform: 'uppercase', letterSpacing: 0.8 }}>
+            Total (EUR)
+          </div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginTop: 2 }}>€148.00</div>
+        </div>
+        <div style={{
+          height: 52, padding: '0 30px', borderRadius: 10,
+          background: C.navy, color: 'white',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          fontWeight: 700, fontSize: 18,
+          transform: `scale(${nextPulse ? 0.97 : 1})`,
+          transition: 'transform 0.1s',
+          boxShadow: nextPulse ? '0 0 0 8px rgba(248,124,86,0.20)' : 'none',
+        }} data-cursor-target="step2-next">
+          Next →
+        </div>
+      </div>
+    </StepFrame>
+  );
+};
+
+// Single-room "+" button center (in stage coords)
+// Card top inside step: 50 padding-top inside frame; frame starts at STEP_PAD.
+// Frame inner left: STEP_PAD = 60; padding-left of inner: 56 → card content x base = 116
+// Frame width = STAGE_W - 2*STEP_PAD = 960. content area width = 960-112 = 848.
+// Right edge of content = STEP_PAD + 56 + 848 = 60 + 56 + 848 = 964 (= STAGE_W - 116, makes sense)
+// Add button at right of row, with row padding 22, button width 70 → button right x = right edge - 22 = 942, center x = 942 - 35 = 907.
+// First row vertical center: y_in_frame = 50 + 44(title) + 4 + 20(sub) + 30 + (22 + max(130,...))/2 → 50 + 68 + 30 + (22 + 130/2 + 22)/... simpler:
+// Inside .padding 50px top, after title block (44+4+20+30 = 98), rows start. Row card: padding 22 + image 130 + padding 22 = 174 height
+// Row 1 vertical center = 50 + 98 + 174/2 = 235 from frame top.
+// Frame top y in stage = STEP_PAD = 60.
+// → y = 60 + 235 = 295
+const STEP2_PLUS_X = STAGE_W - STEP_PAD - 56 - 22 - 35;
+const STEP2_PLUS_Y = STEP_PAD + 50 + 98 + 87;
+
+// Next button center (right side of total bar): right edge of total bar - inner padding (56) - button width/2
+// Total bar bottom-aligned to frame bottom (offset 0). Button height 70 vertically centered in 110-tall bar.
+// Frame bottom y in stage = STAGE_H - STEP_PAD = 1020. Bar top y = 1020 - 110 = 910.
+// Button center y = 910 + 55 = 965.
+// Button width: padding 0 44 + content width ~ "Next →" ~ 100 → ~188 wide. Right edge = STAGE_W - STEP_PAD - 56 = 964.
+// Center x = 964 - 188/2 = 870.
+const STEP2_NEXT_X = 870;
+const STEP2_NEXT_Y = 965;
+
+// ──────────────── Step 3: Add personal data ────────────────
+const Step3_PersonalData = ({ t, visible, savePulse }) => {
+  const inK = clampK(t, 0.0, 0.4);
+  // Fields fill in sequence
+  const fields = [
+    { label: 'First name',  w: '60%' },
+    { label: 'Last name',   w: '70%' },
+    { label: 'Email',       w: '85%' },
+    { label: 'Phone',       w: '50%' },
+    { label: 'Address',     w: '90%' },
+    { label: 'Country',     w: '40%' },
+  ];
+  const fillStart = [0.4, 0.6, 0.8, 1.0, 1.2, 1.4];
+
+  return (
+    <StepFrame minH={828} visible={visible} transform={`translateY(${(1 - inK) * 22}px) scale(${0.98 + 0.02 * inK})`}>
+      <div style={{ padding: '54px 56px' }}>
+        <div style={{ fontSize: 44, fontWeight: 800, color: C.text, letterSpacing: -1, marginBottom: 4 }}>
+          Add personal data
+        </div>
+        <div style={{ fontSize: 20, color: C.mute, fontWeight: 500, marginBottom: 32 }}>
+          Booking 26142 · Single room · 1 night
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 28 }}>
+          {fields.map((f, i) => {
+            const k = clampK(t, fillStart[i], fillStart[i] + 0.25);
+            const isFull = i === 4; // address full-width
+            return (
+              <div key={i} style={{
+                gridColumn: isFull ? '1 / span 2' : 'auto',
+                border: `2px solid ${C.line}`, borderRadius: 14,
+                padding: '20px 24px',
+              }}>
+                <div style={{ fontSize: 20, fontWeight: 600, color: C.text, marginBottom: 12 }}>{f.label}</div>
+                <div style={{
+                  height: 12, borderRadius: 4, background: C.lineSoft, width: f.w,
+                  overflow: 'hidden', position: 'relative',
+                }}>
+                  <div style={{
+                    position: 'absolute', inset: 0, background: '#D5D9DE',
+                    transform: `scaleX(${k})`, transformOrigin: 'left',
+                  }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{
+          height: 88, borderRadius: 14,
+          background: C.green, color: 'white',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontWeight: 700, fontSize: 28,
+          transform: `scale(${savePulse ? 0.97 : 1})`,
+          transition: 'transform 0.1s',
+          boxShadow: savePulse ? '0 0 0 8px rgba(30,110,62,0.18)' : '0 6px 18px rgba(30,110,62,0.18)',
+        }} data-cursor-target="step3-save">Save booking</div>
+      </div>
+    </StepFrame>
+  );
+};
+
+// Save booking center
+// y = STEP_PAD + 54 + 44 + 4 + 20 + 32 + (rows: 2 rows of ~84 + full-width row 84 + 1 row 84 with gaps 20 → r1+r2+r3=84*3 + gaps 20*2 = 292) + 28(mb) + 44(half btn)
+// Actually 6 fields, full-width is index 4 (5th). Layout: row1 (0,1), row2 (2,3), row3 (4 full-width), row4 (5 alone in left col).
+// 4 visual rows. Heights: each ~ 20+12+20*2 = 72. Plus 20 gaps × 3 = 60.
+// total rows height = 72*4 + 60 = 348
+// y = 60 + 54 + 44 + 4 + 20 + 32 + 348 + 28 + 44 = 634
+const STEP3_SAVE_X = SCENE / 2;
+const STEP3_SAVE_Y = 634;
+
+// ──────────────── Step 5: Calendar view ────────────────
+// Rooms × dates grid with booking blocks (teal = confirmed, amber = pending).
+// One block is hovered, then clicked to drill into Step 6.
+// Channel logo dot — small colored badge with letter mark.
+// Booking.com (blue B), Airbnb (red A), Expedia (gold E).
+const ChannelDot = ({ channel, dark }) => {
+  const map = {
+    booking: { bg: '#003580', fg: '#FFFFFF', ch: 'B' },
+    airbnb:  { bg: '#FF5A5F', fg: '#FFFFFF', ch: 'A' },
+    expedia: { bg: '#FDB813', fg: '#0E2235', ch: 'E' },
+  };
+  const c = map[channel]; if (!c) return null;
+  return (
+    <span style={{
+      width: 18, height: 18, borderRadius: '50%',
+      background: c.bg, color: c.fg,
+      fontSize: 11, fontWeight: 800,
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      flexShrink: 0,
+      boxShadow: dark ? '0 0 0 1.5px rgba(255,255,255,0.55)' : '0 0 0 1.5px rgba(255,255,255,0.95)',
+      letterSpacing: 0,
+    }}>{c.ch}</span>
+  );
+};
+
+const CAL_TEAL_DARK  = '#2A6B73';
+const CAL_TEAL_LIGHT = '#B1CDD0';
+const CAL_AMBER      = '#ECC178';
+const CAL_TODAY_BG   = '#E5F2DD';
+
+const CALENDAR_DAYS = [
+  { dow: 'MON', d: 11, mo: 'OCT' },
+  { dow: 'TUE', d: 12, mo: 'OCT' },
+  { dow: 'WED', d: 13, mo: 'OCT' },
+  { dow: 'THU', d: 14, mo: 'OCT', today: true },
+  { dow: 'SAT', d: 16, mo: 'OCT' },
+  { dow: 'SUN', d: 17, mo: 'OCT' },
+  { dow: 'MON', d: 18, mo: 'OCT' },
+  { dow: 'TUE', d: 19, mo: 'OCT' },
+];
+
+// Each row: roomType, then cell entries. Entries are either {n} for empty
+// availability number, or {bk: {name, span, tone, count}} where span=number
+// of columns the block covers and tone='dark' | 'light' | 'amber'.
+const CALENDAR_ROWS = [
+  { room: 'Single room', cells: [
+    { bk: { name: 'Emma Collins',  span: 2, tone: 'light', count: 1, end: 2 } },
+    { n: 13 },
+    { bk: { name: 'Noah Adams',    span: 1, tone: 'dark',  count: null } },
+    { n: 5 },
+    { bk: { name: 'Sophia Turner', span: 1, tone: 'amber', count: 1, end: 7 } },
+    { n: 18 },
+  ]},
+  { room: 'Double room', cells: [
+    { bk: { name: 'James Campbell', span: 2, tone: 'light', count: 1 } },
+    { n: 13 }, { n: 14 }, { n: 16 }, { n: 17 }, { n: 18 }, { n: 19 },
+  ]},
+  { room: 'Queen room', cells: [
+    { n: 11 }, { n: 12 }, { n: 13 }, { n: 14 },
+    { bk: { name: 'Ethan Cooper', span: 3, tone: 'amber', count: 1, end: 8 } },
+    { n: 19 },
+  ]},
+  { room: 'King room', cells: [
+    { n: 11 }, { n: 12 }, { n: 13 },
+    { bk: { name: 'Jason Bradley', span: 1, tone: 'light', count: 1 } },
+    { n: 16 }, { n: 17 },
+    { bk: { name: 'Michelle Terr', span: 1, tone: 'amber', count: 1, end: 8 } },
+    { n: 19 },
+  ]},
+  { room: 'Deluxe room', cells: [
+    { bk: { name: 'James Brook', span: 3, tone: 'light', count: null, end: 4 } },
+    { n: 15 }, { n: 16 }, { n: 17 }, { n: 18 },
+  ]},
+  { room: 'Twin room', cells: [
+    { n: 1 },
+    { bk: { name: 'Paul Wild', span: 1, tone: 'light', count: 1 } },
+    { n: 2 }, { n: 13 },
+    { bk: { name: 'Anna Paul', span: 2, tone: 'dark', count: 1, end: 7 } },
+    { n: 18 },
+  ]},
+];
+
+const Step5_BookingsList = ({ t, visible, hoverIdx = -1, selectedIdx = -1, vibrateK = 0, dragK = 0, settleK = 0 }) => {
+  const inK = clampK(t, 0.0, 0.4);
+
+  // Compute layout
+  const rowLabelW = 200;
+  const dayColW = (960 - rowLabelW) / 8; // content width 960, 8 day cols
+  const rowH = 78;
+  const headerH = 78;
+  const toolbarH = 84;
+
+  // Block we hover/select for narrative continuity → "Piper, Lee" booking.
+  // Use Single room → Noah Adams (dark teal, single-day) as the focus block.
+  const focusRow = 0; // Single room
+  const focusColStart = 3; // THU 14 OCT
+  const focusSpan = 1;
+
+  // Row appearance stagger
+  const rowAppear = (i) => clampK(t, 0.25 + i * 0.04, 0.5 + i * 0.04);
+  const selectK = selectedIdx >= 0 ? clampK(t, 1.6, 2.0) : 0;
+
+  // Tone helpers
+  const blockBg = (tone) => tone === 'dark' ? CAL_TEAL_DARK
+                          : tone === 'amber' ? CAL_AMBER
+                          : CAL_TEAL_LIGHT;
+  const blockFg = (tone) => tone === 'dark' ? '#FFFFFF'
+                          : tone === 'amber' ? '#0E2235'
+                          : '#0E2235';
+
+  return (
+    <StepFrame visible={visible} transform={`translateY(${(1 - inK) * 22}px) scale(${0.98 + 0.02 * inK})`}>
+      {/* Header */}
+      <div style={{ padding: '36px 56px 18px' }}>
+        <div style={{ fontSize: 48, fontWeight: 800, color: C.text, letterSpacing: -1.2 }}>Calendar</div>
+      </div>
+
+      {/* Toolbar */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        padding: '0 56px 22px',
+      }}>
+        {/* Date nav cluster */}
+        <div style={{
+          display: 'flex', alignItems: 'center',
+          background: 'white', border: `1px solid ${C.line}`,
+          borderRadius: 10, padding: 4, gap: 2,
+        }}>
+          {[
+            <svg key="ll" width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5" stroke="#0E2235" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+            <svg key="l"  width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M14 17l-5-5 5-5" stroke="#0E2235" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+            <div key="today" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M6 3v18l6-4 6 4V3z" stroke="#0E2235" strokeWidth="1.8" strokeLinejoin="round"/></svg>
+              <span style={{ fontSize: 18, fontWeight: 600, color: '#0E2235' }}>Today</span>
+            </div>,
+            <svg key="r"  width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M10 17l5-5-5-5" stroke="#0E2235" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+            <svg key="rr" width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M13 17l5-5-5-5M6 17l5-5-5-5" stroke="#0E2235" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+          ].map((el, i) => (
+            <div key={i} style={{
+              padding: '8px 10px', borderRadius: 6,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer',
+            }}>{el}</div>
+          ))}
+        </div>
+
+        {/* Date select */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          background: 'white', border: `1px solid ${C.line}`,
+          borderRadius: 10, padding: '12px 16px', minWidth: 280,
+        }}>
+          <span style={{ fontSize: 18, color: C.mute, fontWeight: 500 }}>Select</span>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="2" stroke="#0E2235" strokeWidth="1.8"/><path d="M3 9h18M8 3v4M16 3v4" stroke="#0E2235" strokeWidth="1.8" strokeLinecap="round"/></svg>
+        </div>
+      </div>
+
+      {/* Calendar grid */}
+      <div style={{
+        margin: '0 56px',
+        background: 'white', border: `1px solid ${C.line}`, borderRadius: 12,
+        overflow: 'hidden',
+      }}>
+        {/* Day header row */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: `${rowLabelW}px repeat(8, 1fr)`,
+          borderBottom: `1px solid ${C.line}`, height: headerH,
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', padding: '0 24px',
+            fontSize: 14, fontWeight: 700, color: C.mute, letterSpacing: 1,
+            textTransform: 'uppercase',
+          }}>All room types</div>
+          {CALENDAR_DAYS.map((d, i) => (
+            <div key={i} style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center',
+              justifyContent: 'center', gap: 2,
+              borderLeft: `1px solid ${C.line}`,
+              background: d.today ? CAL_TODAY_BG : 'transparent',
+            }}>
+              <div style={{ fontSize: 13, color: C.mute, letterSpacing: 0.6, fontWeight: 600 }}>{d.dow}</div>
+              <div style={{ fontSize: 16, color: C.text, fontWeight: d.today ? 800 : 700 }}>
+                {d.d} {d.mo}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Body rows */}
+        {CALENDAR_ROWS.map((row, ri) => {
+          const ap = rowAppear(ri);
+          // Walk cells, tracking which day-column we're at
+          const items = [];
+          let col = 0;
+          row.cells.forEach((cell, ci) => {
+            if (cell.bk) {
+              items.push({ kind: 'bk', start: col, ...cell.bk });
+              col += cell.bk.span;
+            } else {
+              items.push({ kind: 'n', col, n: cell.n });
+              col += 1;
+            }
+          });
+
+          return (
+            <div key={ri} style={{
+              display: 'grid',
+              gridTemplateColumns: `${rowLabelW}px repeat(8, 1fr)`,
+              height: rowH,
+              borderBottom: ri === CALENDAR_ROWS.length - 1 ? 'none' : `1px solid ${C.line}`,
+              opacity: ap,
+              transform: `translateY(${(1 - ap) * 8}px)`,
+              position: 'relative',
+            }}>
+              {/* Room label */}
+              <div style={{
+                display: 'flex', alignItems: 'center', padding: '0 24px',
+                fontSize: 18, fontWeight: 600, color: C.text,
+              }}>{row.room}</div>
+
+              {/* Day cells background (today highlight) */}
+              {CALENDAR_DAYS.map((d, di) => (
+                <div key={di} style={{
+                  borderLeft: `1px solid ${C.line}`,
+                  background: d.today ? CAL_TODAY_BG : 'transparent',
+                  position: 'relative',
+                  zIndex: 0,
+                }} />
+              ))}
+
+              {/* Items overlay — absolute-positioned on top of the cell row */}
+              <div style={{
+                position: 'absolute', left: rowLabelW, top: 0, right: 0, bottom: 0,
+                pointerEvents: 'none',
+                zIndex: 5,
+              }}>
+                {/* Drop-target hint on Double room row when Noah is being dragged.
+                    Width math: Noah's bk block uses content-box with 24px horizontal
+                    padding, so its rendered width is (100%/8 - 6) + 24 = 100%/8 + 18.
+                    The indicator has 2px border each side, so its CSS width is
+                    (100%/8 + 14) to net the same rendered footprint. */}
+                {ri === 1 && dragK > 0 && (
+                  <div style={{
+                    position: 'absolute',
+                    left: `calc(3 * (100% / 8) + (100% / 8) * 0.5 + 3px)`,
+                    width: `calc((100% / 8) + 14px)`,
+                    top: 14, bottom: 14,
+                    borderRadius: 8,
+                    border: `2px dashed ${C.greenAccent}`,
+                    background: 'rgba(31,191,122,0.12)',
+                    // Fade the drop indicator out as Noah lands so it doesn't
+                    // visually wrap around his pill once he's seated.
+                    opacity: clampK(dragK, 0.05, 0.5) * (1 - clampK(dragK, 0.7, 0.95)),
+                  }} />
+                )}
+                {items.map((it, ii) => {
+                  const colW = `calc((100% / 8))`;
+                  const startPct = `calc(${(it.kind === 'bk' ? it.start : it.col)} * (100% / 8))`;
+                  if (it.kind === 'n') {
+                    // Hide the empty number on Double room's THU cell while dragging
+                    // — the green dashed drop indicator takes its place.
+                    const isHidden = ri === 1 && it.col === 3 && dragK > 0.05;
+                    return (
+                      <div key={ii} style={{
+                        position: 'absolute',
+                        left: startPct, width: colW,
+                        top: 0, bottom: 0,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 20, color: C.mute, fontWeight: 500,
+                        opacity: isHidden ? 0 : 1,
+                      }}>{it.n}</div>
+                    );
+                  }
+                  // Booking block
+                  const isFocus = ri === focusRow && it.start === focusColStart;
+                  const isHover = isFocus && hoverIdx === 0 && selectedIdx < 0 && vibrateK <= 0 && dragK <= 0;
+                  const isSelected = isFocus && selectedIdx === 0;
+                  const liftK = isSelected ? selectK : 0;
+                  const w = `calc(${it.span} * (100% / 8))`;
+                  // Block sits halfway over the start day and extends for span days,
+                  // visually overlapping the next cell — matches real Sirvoy calendar.
+                  const offset = `calc((100% / 8) * 0.5)`;
+                  // Drag-and-drop transforms — applied only to the focus block.
+                  // vibrateK 0→1: small rotational shake while user "holds" the block.
+                  // dragK    0→1: drops one row height (rowH) onto the Double row.
+                  const isDragging = isFocus && dragK > 0;
+                  const isVibing  = isFocus && vibrateK > 0 && dragK <= 0;
+                  const shakeRot = isVibing ? Math.sin(vibrateK * Math.PI * 8) * 1.6 : 0;
+                  // After drag completes, settleK ramps the lift / scale back to 0
+                  // so Noah lands flat in the cell.
+                  const settleEase = 1 - settleK;
+                  const liftPx = isFocus ? (vibrateK * 4 + dragK * 6 * settleEase) : (liftK * 3);
+                  const dragY = isFocus ? dragK * rowH : 0;
+                  const dragScale = isFocus ? 1 + (vibrateK * 0.015) + (dragK * 0.025 * settleEase) : 1;
+                  // Source row "ghost" placeholder fades in as block lifts off
+                  const ghostOpacity = isFocus ? Math.max(vibrateK, dragK) * 0.5 : 0;
+                  return (
+                    <div
+                      key={ii}
+                      data-cursor-target={isFocus ? 'cal-focus' : undefined}
+                      style={{
+                        position: 'absolute',
+                        left: `calc(${startPct} + ${offset} + 3px)`,
+                        width: `calc(${w} - 6px)`,
+                        top: 14, bottom: 14,
+                        background: blockBg(it.tone),
+                        color: blockFg(it.tone),
+                        borderRadius: 8,
+                        display: 'flex', alignItems: 'center',
+                        padding: '0 12px', gap: 8,
+                        fontSize: 17, fontWeight: 700,
+                        letterSpacing: -0.2,
+                        overflow: 'hidden',
+                        boxShadow: isHover
+                          ? '0 0 0 3px rgba(31,191,122,0.55)'
+                          : (isDragging || isVibing)
+                            ? `0 ${12 * settleEase}px ${28 * settleEase + 4}px rgba(14,34,53,${0.28 * settleEase}), 0 2px 6px rgba(14,34,53,${0.18 * settleEase})`
+                            : 'none',
+                        outline: (isSelected && liftK > 0) || isDragging || isVibing
+                          ? `2px solid ${C.greenAccent}` : 'none',
+                        transform: `translate(0, ${dragY - liftPx}px) rotate(${shakeRot}deg) scale(${dragScale})`,
+                        transformOrigin: 'center',
+                        zIndex: isFocus && (isDragging || isVibing) ? 20 : (isFocus ? 5 : 2),
+                      }}
+                    >
+                      {it.count != null && (
+                        <span style={{
+                          fontSize: 15, fontWeight: 700,
+                          opacity: it.tone === 'dark' ? 0.9 : 0.7,
+                        }}>{it.count}</span>
+                      )}
+                      <span style={{
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        flex: 1,
+                      }}>{it.name}</span>
+                      {it.end != null && (
+                        <span style={{
+                          fontSize: 15, fontWeight: 600,
+                          opacity: 0.55,
+                          marginLeft: 'auto',
+                        }}>{it.end}</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </StepFrame>
+  );
+};
+
+// Cursor target on calendar — focus block (Single room → Noah Adams, THU)
+// Approximate stage coords (resolved dynamically via data-cursor-target)
+const STEP5_ROW0_X = 540;
+const STEP5_ROW0_Y = 470;
+
+// ──────────────── Step 6: Booking detail ────────────────
+const RED = '#E0341F';
+
+// Tiny inline icons for action buttons. Stroke-based, drawn to look at home
+// next to bold sans-serif labels. Each is sized by the caller via width/height.
+const IconClock = ({ s = 22, c = C.text }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="9" stroke={c} strokeWidth="1.8"/>
+    <path d="M12 7v5l3.2 2" stroke={c} strokeWidth="1.8" strokeLinecap="round"/>
+  </svg>
+);
+const IconScissors = ({ s = 22, c = C.text }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+    <circle cx="6.5" cy="7" r="2.5" stroke={c} strokeWidth="1.8"/>
+    <circle cx="6.5" cy="17" r="2.5" stroke={c} strokeWidth="1.8"/>
+    <path d="M9 8.5 20 17M9 15.5 20 7" stroke={c} strokeWidth="1.8" strokeLinecap="round"/>
+  </svg>
+);
+const IconPhone = ({ s = 22, c = C.text }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+    <rect x="6.5" y="3" width="11" height="18" rx="2.4" stroke={c} strokeWidth="1.8"/>
+    <path d="M10.5 18.5h3" stroke={c} strokeWidth="1.8" strokeLinecap="round"/>
+  </svg>
+);
+const IconMail = ({ s = 22, c = C.text }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+    <rect x="3" y="5.5" width="18" height="13" rx="2" stroke={c} strokeWidth="1.8"/>
+    <path d="m3.5 6.5 8.5 6.5L20.5 6.5" stroke={c} strokeWidth="1.8" strokeLinejoin="round"/>
+  </svg>
+);
+const IconPrinter = ({ s = 22, c = C.text }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+    <path d="M7 8V4h10v4" stroke={c} strokeWidth="1.8" strokeLinejoin="round"/>
+    <rect x="4" y="8" width="16" height="9" rx="1.6" stroke={c} strokeWidth="1.8"/>
+    <rect x="7" y="14" width="10" height="6" rx="1" stroke={c} strokeWidth="1.8"/>
+  </svg>
+);
+const IconX = ({ s = 22, c = C.text }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+    <path d="m6 6 12 12M18 6 6 18" stroke={c} strokeWidth="2.2" strokeLinecap="round"/>
+  </svg>
+);
+const IconDoc = ({ s = 20, c = C.mute }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+    <path d="M6 3h8l4 4v14H6z" stroke={c} strokeWidth="1.6" strokeLinejoin="round"/>
+    <path d="M14 3v4h4" stroke={c} strokeWidth="1.6" strokeLinejoin="round"/>
+  </svg>
+);
+
+const ActionBtn = ({ icon, label, danger = false, ghost = false }) => {
+  const fg = danger ? RED : C.text;
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      padding: '14px 20px',
+      borderRadius: 12,
+      background: ghost ? 'transparent' : 'white',
+      border: `1.5px solid ${danger ? '#F4C7C0' : C.line}`,
+      fontSize: 19, fontWeight: 700, color: fg,
+      whiteSpace: 'nowrap',
+      letterSpacing: -0.2,
+    }}>
+      {icon}
+      <span>{label}</span>
+    </div>
+  );
+};
+
+const Step6_BookingDetail = ({ t, visible }) => {
+  const inK = clampK(t, 0.0, 0.5);
+  const k1 = clampK(t, 0.18, 0.5);   // action row
+  const k2 = clampK(t, 0.35, 0.7);   // dates / total
+  const k3 = clampK(t, 0.55, 0.85);  // invoice table
+  const k4 = clampK(t, 0.7, 1.0);    // guest / extras
+  return (
+    <StepFrame minH={828} visible={visible} soft transform={`translateY(${(1 - inK) * 18}px) scale(${0.98 + 0.02 * inK})`}>
+      <div style={{ padding: '40px 52px 48px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+        {/* Title row with status pill */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 18, opacity: clampK(t, 0.15, 0.55) }}>
+          <div style={{
+            fontSize: 46, fontWeight: 800, color: C.text, letterSpacing: -1.2,
+          }} data-cursor-target="step6-title">Booking 26142</div>
+          <div style={{
+            padding: '6px 14px', borderRadius: 999,
+            background: C.greenSoft, color: C.green,
+            fontSize: 15, fontWeight: 700, letterSpacing: 0.2,
+          }}>CONFIRMED</div>
+          <div style={{ flex: 1 }} />
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            padding: '6px 12px', borderRadius: 999,
+            background: '#F2F4F7', color: C.text,
+            fontSize: 14, fontWeight: 600, letterSpacing: 0.1,
+            border: `1px solid ${C.line}`,
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: C.mute, letterSpacing: 1.2 }}>SOURCE</span>
+            <span>Reception</span>
+          </div>
+          <div style={{ fontSize: 17, color: C.mute, fontWeight: 500 }}>Double room · 1 night</div>
+        </div>
+
+        {/* Action button row */}
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', gap: 10,
+          opacity: k1,
+          transform: `translateY(${(1 - k1) * 10}px)`,
+        }}>
+          <ActionBtn icon={<IconClock />} label="Change dates" />
+          <ActionBtn icon={<IconScissors />} label="Divide booking" />
+          <ActionBtn icon={<IconPhone />} label="Send SMS" />
+          <ActionBtn icon={<IconMail />} label="Send email" />
+          <ActionBtn icon={<IconPrinter />} label="Print" />
+          <ActionBtn icon={<IconX s={22} c={RED} />} label="Cancel booking" danger />
+        </div>
+
+        {/* Dates + total */}
+        <div style={{
+          background: 'white', borderRadius: 16, padding: '26px 32px',
+          border: `1px solid ${C.line}`,
+          opacity: k2,
+          transform: `translateY(${(1 - k2) * 12}px)`,
+        }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 28 }}>
+            {[
+              { label: 'CHECK-IN',  value: 'Thu 14 Oct 2026', sub: 'from 15:00' },
+              { label: 'CHECK-OUT', value: 'Fri 15 Oct 2026', sub: 'until 11:00' },
+              { label: 'NIGHTS',    value: '1 night',         sub: '1 guest' },
+            ].map((f, i) => (
+              <div key={i}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.mute, letterSpacing: 1, marginBottom: 8 }}>{f.label}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: -0.4 }}>{f.value}</div>
+                <div style={{ fontSize: 15, color: C.mute, fontWeight: 500, marginTop: 2 }}>{f.sub}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Invoice table */}
+        <div style={{
+          background: 'white', borderRadius: 16,
+          border: `1px solid ${C.line}`, overflow: 'hidden',
+          opacity: k3,
+          transform: `translateY(${(1 - k3) * 12}px)`,
+        }}>
+          {/* header row */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1.4fr 1fr 0.7fr',
+            padding: '14px 28px',
+            fontSize: 12, fontWeight: 700, color: C.mute, letterSpacing: 1.2,
+            borderBottom: `1px solid ${C.line}`,
+            background: '#FBFBFC',
+          }}>
+            <div>GUEST</div>
+            <div style={{ textAlign: 'center' }}>INVOICE</div>
+            <div style={{ textAlign: 'right' }}>AMOUNT</div>
+          </div>
+          {/* row */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1.4fr 1fr 0.7fr',
+            padding: '20px 28px', alignItems: 'center',
+          }}>
+            <div style={{ fontSize: 19, fontWeight: 600, color: C.text }}>Noah Adams</div>
+            <div style={{ display: 'flex', justifyContent: 'center' }}><IconDoc /></div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.text, textAlign: 'right' }}>€148.00</div>
+          </div>
+        </div>
+
+        {/* Notes / extras (skeleton) */}
+        <div style={{
+          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14,
+          opacity: k4,
+          transform: `translateY(${(1 - k4) * 12}px)`,
+        }}>
+          <div style={{
+            background: 'white', borderRadius: 16, padding: '18px 24px',
+            border: `1px solid ${C.line}`,
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.mute, letterSpacing: 1.2, marginBottom: 10 }}>NOTES</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ height: 10, borderRadius: 4, background: C.lineSoft, width: '88%' }} />
+              <div style={{ height: 10, borderRadius: 4, background: C.lineSoft, width: '72%' }} />
+            </div>
+          </div>
+          <div style={{
+            background: 'white', borderRadius: 16, padding: '18px 24px',
+            border: `1px solid ${C.line}`,
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.mute, letterSpacing: 1.2, marginBottom: 10 }}>EXTRAS</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ height: 10, borderRadius: 4, background: C.lineSoft, width: '60%' }} />
+              <div style={{ height: 10, borderRadius: 4, background: C.lineSoft, width: '80%' }} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </StepFrame>
+  );
+};
+
+// Step 6 cursor — over title "Booking 26142"
+const STEP6_TITLE_X = STEP_PAD + 56 + 220;
+const STEP6_TITLE_Y = STEP_PAD + 54 + 25;
+
+// ──────────────── Step 8: Statistics dashboard ────────────────
+// Mirrors Sirvoy's actual Statistics page:
+//   Row 1: Key Metrics (Value / ADR / RevPAR)   |  Invoicing (Cash receipts / Invoices / Invoice payments)
+//   Row 2: Payments (Invoiced (external app) / Card / Stripe)  |  Occupancy during this timeframe (Usage / Guests / Guest nights / Room nights)
+//   Row 3: Booking created in this timeframe — "New bookings" big number, then two horizontal bar groups (Source, Made by)
+//   Row 4: Charts — "Occupied rooms" dropdown header + filled area line chart
+// Numbers tick up, bars sweep right-to-left, area chart draws on. Currency = SEK to match the screenshot.
+
+// Currency used in the dashboard.
+const CUR = 'EUR';
+const CUR_SYMBOL = '€';
+
+// Row 1 — left: Key Metrics
+//   Value (revenue) — Sirvoy splits into Room + Extras
+const STEP8_KM = {
+  value:   { total: 28270, room: 20242, extras: 8028 },
+  adr:     142,    // average daily rate
+  revpar:  53,     // revenue per available room
+};
+// Row 1 — right: Invoicing
+const STEP8_INVOICING = [
+  { label: 'Cash receipts',    value: 540, sub: 'Excl. VAT: €482; VAT: €58' },
+  { label: 'Invoices',         value: 70,  sub: 'Excl. VAT: €63; VAT: €7' },
+  { label: 'Invoice payments', value: 70,  sub: '' },
+];
+
+// Row 2 — left: Payments
+const STEP8_PAYMENTS = [
+  { label: 'Invoiced (external app)', value: 8730 },
+  { label: 'Card',                    value: 765  },
+  { label: 'Stripe',                  value: 11260 },
+];
+// Row 2 — right: Occupancy during this timeframe
+const STEP8_OCCUPANCY = [
+  { label: 'Usage',       value: 37.37, pct: true },
+  { label: 'Guests',      value: 175 },
+  { label: 'Guest nights', value: 708 },
+  { label: 'Room nights',  value: 475 },
+];
+
+// Row 3 — Booking created in this timeframe
+const STEP8_NEW_BOOKINGS = 81;
+// Source breakdown — percentages, ordered by value (legend swatch + bar color)
+const STEP8_SOURCE = [
+  { label: 'Booking.com', value: 54, color: '#1F2C7A' }, // dark navy/blue
+  { label: 'Website',     value: 32, color: '#F08363' }, // soft orange
+  { label: 'Front desk',  value: 14, color: '#7E58A6' }, // purple
+];
+// Made-by breakdown
+const STEP8_MADEBY = [
+  { label: 'Guests (online)',   value: 84, color: '#0FB69E' }, // teal
+  { label: 'Tomas Haverskog',   value: 16, color: '#7E58A6' }, // purple
+];
+
+// Row 4 — Charts (occupied rooms over the timeframe)
+// 30 daily values — gentle wave w/ a midweek peak around day 22-26.
+const STEP8_OCC_ROOMS = [
+  30, 32, 28, 25, 22, 19, 17,
+  18, 22, 26, 24, 20, 17, 15,
+  14, 16, 19, 22, 24, 22,  20,
+  19, 28, 30, 31, 30, 28,
+  22, 18, 16,
+];
+
+const fmtNum = (n) => Math.round(n).toLocaleString('en-US');
+
+const Step8_Statistics = ({ t, visible }) => {
+  // Phased ramps over the ~5s scene
+  const inK     = clampK(t, 0.0, 0.5);                    // overall page fade-in
+  const r1K     = clampK(t, 0.30, 1.30);                  // row 1 cards
+  const r2K     = clampK(t, 0.70, 1.70);                  // row 2 cards
+  const r3K     = clampK(t, 1.10, 2.30);                  // row 3 (bars)
+  const r4K     = clampK(t, 1.60, 3.20);                  // row 4 area chart
+
+  // Camera: gentle zoom-in entry
+  const camScale = lerp(1.04, 1.0, Easing.easeOutCubic(inK));
+
+  // Number tickers — share kpiK so they all land together
+  const kpiK = clampK(t, 0.30, 1.40);
+  const kpiE = Easing.easeOutCubic(kpiK);
+  const tickN = (n) => fmtNum(n * kpiE);
+  const tickPct = (n) => (n * kpiE).toFixed(2);
+
+  // Row 4 area chart geometry
+  const N = STEP8_OCC_ROOMS.length;
+  const CW = 1100, CH = 230;
+  const padL = 36, padR = 18, padT = 16, padB = 28;
+  const plotW = CW - padL - padR;
+  const plotH = CH - padT - padB;
+  const yMax = 35;
+  const px = (i) => padL + (i / (N - 1)) * plotW;
+  const py = (v) => padT + (1 - v / yMax) * plotH;
+
+  let pathD = `M ${px(0)} ${py(STEP8_OCC_ROOMS[0])}`;
+  for (let i = 1; i < N; i++) {
+    const x0 = px(i - 1), y0 = py(STEP8_OCC_ROOMS[i - 1]);
+    const x1 = px(i),     y1 = py(STEP8_OCC_ROOMS[i]);
+    const mx = (x0 + x1) / 2;
+    pathD += ` Q ${mx} ${y0}, ${mx} ${(y0 + y1) / 2} T ${x1} ${y1}`;
+  }
+  const areaD = pathD + ` L ${px(N - 1)} ${padT + plotH} L ${px(0)} ${padT + plotH} Z`;
+  const lineLen = 2400;
+  const dashOffset = (1 - Easing.easeOutCubic(r4K)) * lineLen;
+
+  // ── Reusable bits ──
+  // Card shell — clean white panel matching the screenshot
+  const cardStyle = (rampK, extra = {}) => ({
+    background: 'white',
+    border: `1px solid ${C.line}`,
+    borderRadius: 14,
+    padding: '20px 24px',
+    opacity: rampK,
+    transform: `translateY(${(1 - rampK) * 12}px)`,
+    transition: 'opacity 0.05s, transform 0.05s',
+    ...extra,
+  });
+
+  const SectionTitle = ({ children }) => (
+    <div style={{
+      fontSize: 17, fontWeight: 700, color: C.text, letterSpacing: -0.2,
+      marginBottom: 14,
+    }}>{children}</div>
+  );
+
+  const StatCell = ({ label, currency, value, sub }) => (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: C.mute, marginBottom: 6 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, fontVariantNumeric: 'tabular-nums' }}>
+        {currency && <span style={{ fontSize: 22, color: C.text, fontWeight: 600, letterSpacing: -0.4, lineHeight: 1 }}>{CUR_SYMBOL}</span>}
+        <span style={{ fontSize: 30, fontWeight: 700, color: C.text, letterSpacing: -0.6, lineHeight: 1 }}>{value}</span>
+      </div>
+      {sub && <div style={{ fontSize: 12, color: C.mute, marginTop: 6, lineHeight: 1.4 }}>{sub}</div>}
+    </div>
+  );
+
+  // Horizontal bar row used inside Source / Made by
+  const BarRow = ({ row, idx, baseDelay, axisMax, totalRamp, labelW }) => {
+    const rowK = clampK(t, baseDelay + idx * 0.10, baseDelay + 0.55 + idx * 0.10);
+    const barK = Easing.easeOutCubic(rowK);
+    const widthPct = (row.value / axisMax) * 100 * barK;
+    return (
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: `${labelW}px 1fr`,
+        alignItems: 'center', gap: 10,
+        opacity: totalRamp,
+      }}>
+        <div style={{ fontSize: 11, color: C.text, fontWeight: 500, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.label}</div>
+        <div style={{ position: 'relative', height: 14 }}>
+          <div style={{
+            height: '100%',
+            width: `${widthPct}%`,
+            background: row.color,
+            borderRadius: 0,
+          }} />
+        </div>
+      </div>
+    );
+  };
+
+  // Axis under bars — labels 0,10,20,...
+  const Axis = ({ max, labelW }) => {
+    const ticks = [];
+    for (let v = 0; v <= max; v += 10) ticks.push(v);
+    return (
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: `${labelW}px 1fr`,
+        gap: 10, marginTop: 4,
+      }}>
+        <div />
+        <div style={{ position: 'relative', height: 36 }}>
+          {/* tick line */}
+          <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 1, background: '#D6DBE2' }} />
+          {ticks.map(v => (
+            <div key={v} style={{
+              position: 'absolute',
+              left: `${(v / max) * 100}%`,
+              top: 0, transform: 'translateX(-50%)',
+              fontSize: 10, color: C.mute, paddingTop: 5,
+              fontVariantNumeric: 'tabular-nums',
+            }}>
+              <div style={{ width: 1, height: 3, background: '#D6DBE2', margin: '0 auto 2px' }} />
+              {v}
+            </div>
+          ))}
+          <div style={{
+            position: 'absolute', left: '50%', transform: 'translateX(-50%)', bottom: 0,
+            fontSize: 10, color: C.mute, whiteSpace: 'nowrap',
+          }}>Percentage (%)</div>
+        </div>
+      </div>
+    );
+  };
+
+  // Legend pills (small color chip + label)
+  const Legend = ({ items }) => (
+    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 6, rowGap: 6 }}>
+      {items.map(it => (
+        <div key={it.label} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: C.text, whiteSpace: 'nowrap' }}>
+          <span style={{ width: 10, height: 10, background: it.color, borderRadius: 2, flexShrink: 0 }} />
+          {it.label}
+        </div>
+      ))}
+    </div>
+  );
+
+  // ── Layout ──
+  return (
+    <StepFrame
+      visible={visible}
+      transform={`scale(${camScale})`}
+    >
+      <div style={{
+        width: '100%', height: '100%',
+        opacity: inK,
+        display: 'flex', flexDirection: 'column',
+        padding: '22px 24px 28px',
+        gap: 14,
+        background: '#F4F5F7',
+        overflow: 'hidden',
+      }}>
+        {/* Header: "Statistics" + right-side toolbar (Generate file, Filters) */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '4px 4px 0' }}>
+          <div style={{ fontSize: 26, fontWeight: 700, color: C.text, letterSpacing: -0.6 }}>Statistics</div>
+          <div style={{ flex: 1 }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button style={{
+              background: 'white', border: `1px solid ${C.line}`, borderRadius: 6,
+              padding: '7px 12px', fontSize: 12, color: C.text, fontWeight: 500,
+              display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'default',
+            }}>
+              Generate report
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M8 2 V11 M4 7 L8 11 L12 7 M3 13 H13" stroke={C.text} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <button style={{
+              background: 'white', border: `1px solid ${C.line}`, borderRadius: 6,
+              padding: '7px 12px', fontSize: 12, color: C.text, fontWeight: 500,
+              display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'default',
+            }}>
+              Filters
+              <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3 L5 7 L8 3" stroke={C.text} strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+            <div style={{
+              width: 24, height: 24, borderRadius: '50%', background: 'white', border: `1px solid ${C.line}`,
+              display: 'grid', placeItems: 'center', fontSize: 13, color: C.mute, fontWeight: 600,
+            }}>?</div>
+          </div>
+        </div>
+
+        {/* Row 1 — Key Metrics | Invoicing */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <div style={cardStyle(r1K)}>
+            <SectionTitle>Key Metrics</SectionTitle>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
+              <StatCell
+                label="Value"
+                currency={CUR}
+                value={tickN(STEP8_KM.value.total)}
+                sub={`Room: €${fmtNum(STEP8_KM.value.room * kpiE)}\nExtras: €${fmtNum(STEP8_KM.value.extras * kpiE)}`.split('\n').map((s, i) => <div key={i}>{s}</div>)}
+              />
+              <StatCell label="Average Daily Rate (ADR)"      currency={CUR} value={tickN(STEP8_KM.adr)} />
+              <StatCell label="Revenue per Available Room (RevPAR)" currency={CUR} value={tickN(STEP8_KM.revpar)} />
+            </div>
+          </div>
+          <div style={cardStyle(r1K)}>
+            <SectionTitle>Invoicing</SectionTitle>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
+              {STEP8_INVOICING.map(it => (
+                <StatCell key={it.label} label={it.label} currency={CUR} value={tickN(it.value)} sub={it.sub || null} />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Row 2 — Payments | Occupancy during this timeframe */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <div style={cardStyle(r2K)}>
+            <SectionTitle>Payments</SectionTitle>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
+              {STEP8_PAYMENTS.map(it => (
+                <StatCell key={it.label} label={it.label} currency={CUR} value={tickN(it.value)} />
+              ))}
+            </div>
+          </div>
+          <div style={cardStyle(r2K)}>
+            <SectionTitle>Occupancy during this timeframe</SectionTitle>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 18 }}>
+              {STEP8_OCCUPANCY.map(it => (
+                <StatCell
+                  key={it.label}
+                  label={it.label}
+                  value={it.pct ? `${tickPct(it.value)}%` : tickN(it.value)}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Row 3 — Booking created in this timeframe */}
+        <div style={cardStyle(r3K)}>
+          <SectionTitle>Booking created in this timeframe</SectionTitle>
+          <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: 20, alignItems: 'flex-start' }}>
+            {/* New bookings — big number */}
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.mute, marginBottom: 6 }}>New bookings</div>
+              <div style={{ fontSize: 34, fontWeight: 700, color: C.text, letterSpacing: -0.6, fontVariantNumeric: 'tabular-nums' }}>
+                {tickN(STEP8_NEW_BOOKINGS)}
+              </div>
+            </div>
+
+            {/* Source */}
+            <div>
+              <div style={{ fontSize: 12, color: C.mute, fontWeight: 600, marginBottom: 10 }}>Source</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {STEP8_SOURCE.map((row, i) => (
+                  <BarRow key={row.label} row={row} idx={i} baseDelay={1.30} axisMax={60} totalRamp={r3K} labelW={70} />
+                ))}
+              </div>
+              <Axis max={60} labelW={70} />
+              <Legend items={[...STEP8_SOURCE].reverse()} />
+            </div>
+
+            {/* Made by */}
+            <div>
+              <div style={{ fontSize: 12, color: C.mute, fontWeight: 600, marginBottom: 10 }}>Made by</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {STEP8_MADEBY.map((row, i) => (
+                  <BarRow key={row.label} row={row} idx={i} baseDelay={1.55} axisMax={90} totalRamp={r3K} labelW={110} />
+                ))}
+              </div>
+              <Axis max={90} labelW={110} />
+              <Legend items={[...STEP8_MADEBY].reverse()} />
+            </div>
+          </div>
+        </div>
+
+        {/* Row 4 — Charts (Occupied rooms over timeframe) */}
+        <div style={cardStyle(r4K, { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 })}>
+          <SectionTitle>Charts</SectionTitle>
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'space-between',
+            gap: 10, padding: '7px 12px',
+            border: `1px solid ${C.line}`, borderRadius: 6,
+            fontSize: 12, color: C.text, fontWeight: 500,
+            width: 200, marginBottom: 12, background: 'white',
+          }}>
+            Occupied rooms
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3 L5 7 L8 3" stroke={C.text} strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <svg viewBox={`0 0 ${CW} ${CH}`} width="100%" height="100%" preserveAspectRatio="none" style={{ display: 'block' }}>
+              <defs>
+                <linearGradient id="occRoomsFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%"  stopColor="#9CC9CD" stopOpacity="0.55" />
+                  <stop offset="100%" stopColor="#9CC9CD" stopOpacity="0.05" />
+                </linearGradient>
+              </defs>
+
+              {/* Y gridlines / labels */}
+              {[0, 5, 10, 15, 20, 25, 30, 35].map(v => (
+                <g key={v}>
+                  <line
+                    x1={padL} x2={CW - padR}
+                    y1={py(v)} y2={py(v)}
+                    stroke="#E4E7EB" strokeWidth="1"
+                  />
+                  <text
+                    x={padL - 6} y={py(v) + 3}
+                    fontSize="10" fill="#6A7A8C" textAnchor="end"
+                    fontFamily="Inter, system-ui, sans-serif"
+                  >{v}</text>
+                </g>
+              ))}
+
+              {/* Filled area under curve */}
+              <path d={areaD} fill="url(#occRoomsFill)" opacity={Easing.easeOutCubic(r4K)} />
+              {/* Curve stroke */}
+              <path
+                d={pathD}
+                fill="none"
+                stroke="#5A8E94"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={lineLen}
+                strokeDashoffset={dashOffset}
+              />
+            </svg>
+          </div>
+        </div>
+      </div>
+    </StepFrame>
+  );
+};
+
+// Sidebar Bookings target (in stage coords)
+const SB_BOOKINGS_X = SB_HPAD + 22 + 36 + 11 + 90; // icon + gap then label area, click in middle of label
+const SB_BOOKINGS_Y = sidebarItemY(2);  // index 2 = Bookings
+
+// ──────────────── Caption ────────────────
+const StepCaption = ({ t }) => {
+  const steps = [
+    { n: 1, label: 'New booking',          start: 0.4,  end: 2.95 },
+    { n: 2, label: 'Select a room',        start: 3.6,  end: 5.85 },
+    { n: 3, label: 'Add personal data',    start: 6.4,  end: 8.35 },
+    { n: 4, label: 'Open Calendar',        start: 8.9,  end: 10.65 },
+    { n: 5, label: 'Find booking',         start: 11.2, end: 12.85 },
+    { n: 6, label: 'Booking detail',       start: 13.4, end: 15.5 },
+  ];
+  return (
+    <>
+      {steps.map((s, i) => {
+        const fadeIn  = clampK(t, s.start, s.start + 0.35);
+        const fadeOut = 1 - clampK(t, s.end, s.end + 0.35);
+        const op = Math.min(fadeIn, fadeOut);
+        if (op <= 0) return null;
+        return (
+          <div key={i} style={{
+            position: 'absolute', left: '50%', bottom: 30,
+            transform: `translate(-50%, ${(1 - fadeIn) * 6}px)`,
+            display: 'flex', alignItems: 'center', gap: 14,
+            padding: '14px 26px 14px 16px',
+            background: 'rgba(14,34,53,0.90)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid rgba(255,255,255,0.10)',
+            borderRadius: 999,
+            opacity: op, zIndex: 250, pointerEvents: 'none',
+          }}>
+            <div style={{
+              width: 32, height: 32, borderRadius: '50%',
+              background: '#F87C56', color: 'white',
+              display: 'grid', placeItems: 'center',
+              fontSize: 15, fontWeight: 800,
+            }}>{s.n}</div>
+            <div style={{ color: 'white', fontSize: 19, fontWeight: 600 }}>{s.label}</div>
+          </div>
+        );
+      })}
+    </>
+  );
+};
+
+// ──────────────── Master Scene ────────────────
+const FlowScene = () => {
+  const t = useTime();
+  const lt = t % DURATION;
+
+  const T = {
+    s1End: 3.2,
+    s2Start: 3.2,  s2End: 7.5,    // adds room-number dropdown pick
+    s3Start: 7.5,  s3End: 10.0,
+    s4Start: 10.0, s4End: 12.3,   // sidebar (calendar)
+    s5Start: 12.3, s5End: 14.0,   // calendar overview (no drag-and-drop)
+    s6Start: 14.0, s6End: 16.0,
+    s7Start: 16.0, s7End: 18.1,   // sidebar (statistics) — extra dwell on the click
+    s8Start: 18.1, s8End: 22.8,   // statistics dashboard
+    loop: 22.8,
+  };
+
+  // Visibility
+  // Step 1+2 are now a single continuous screen (form compacts into a summary bar
+  // and rooms slide in below). It runs from t=0 → t=s2End, then fades out into Step 3.
+  const v12 = clampK(lt, 0, 0.2) * (1 - clampK(lt, T.s2End, T.s2End + 0.3));
+  const v3 = clampK(lt, T.s3Start, T.s3Start + 0.3) * (1 - clampK(lt, T.s4Start - 0.4, T.s4Start - 0.1));
+  // Step 3 (personal data) stays visible UNDER the sidebar in step 4, then fades to step 5
+  const v3Under = clampK(lt, T.s3Start, T.s3Start + 0.3) * (1 - clampK(lt, T.s5Start - 0.0, T.s5Start + 0.3));
+  const v5 = clampK(lt, T.s5Start, T.s5Start + 0.3) * (1 - clampK(lt, T.s6Start, T.s6Start + 0.3));
+  // Booking detail stays visible UNDER the sidebar in step 7, then crossfades into Statistics in step 8.
+  const v6 = clampK(lt, T.s6Start, T.s6Start + 0.3) * (1 - clampK(lt, T.s8Start - 0.0, T.s8Start + 0.4));
+  const v8 = clampK(lt, T.s8Start, T.s8Start + 0.4) * (1 - clampK(lt, T.loop - 0.4, T.loop + 0.2));
+
+  // Sidebar slide — opens in step 4 AND in step 7
+  const sidebarIn4   = clampK(lt, T.s4Start, T.s4Start + 0.5);
+  const sidebarOut4  = clampK(lt, T.s4End - 0.4, T.s4End);
+  const sidebarIn7   = clampK(lt, T.s7Start, T.s7Start + 0.5);
+  const sidebarOut7  = clampK(lt, T.s7End - 0.4, T.s7End);
+  const sidebarK     = sidebarIn4 * (1 - sidebarOut4) + sidebarIn7 * (1 - sidebarOut7);
+
+  const cursorOnCalendar = lt > T.s4Start + 1.2 && lt < T.s4End;
+  const calendarClicked  = lt > T.s4Start + 1.7 && lt < T.s7Start;
+  // Extended dwell so the viewer clearly sees the cursor land on Statistics,
+  // hover for a beat, then click.
+  const cursorOnStats    = lt > T.s7Start + 0.95 && lt < T.s7Start + 1.95;
+  const statsClicked     = lt > T.s7Start + 1.95;
+
+  const sidebarHover  =
+    cursorOnStats ? 'statistics' :
+    (cursorOnCalendar && !calendarClicked ? 'calendar' : null);
+  const sidebarActive =
+    statsClicked     ? 'statistics' :
+    calendarClicked  ? 'calendar'   :
+    'newbooking';
+
+  // Pulses
+  const step2NextPulse  = lt > T.s2Start + 4.0 && lt < T.s2Start + 4.2;
+  const step3SavePulse  = lt > T.s3Start + 2.05 && lt < T.s3Start + 2.25;
+
+  // Save confirmation toast: appears right after the Save tap, holds while the
+  // sidebar opens, fades out before the user clicks Calendar.
+  //   9.75 → 9.95  pop in
+  //   9.95 → 11.0  hold
+  //   11.0 → 11.4  fade out
+  const toastIn  = clampK(lt, T.s3Start + 2.25, T.s3Start + 2.45);
+  const toastOut = clampK(lt, T.s4Start + 1.0, T.s4Start + 1.4);
+  const toastK   = toastIn * (1 - toastOut);
+
+  // Step 5 — calendar overview. The cursor moves to Noah Adams' pill on
+  // Thursday and taps it; that opens Step 6 (booking detail). The drag-and-drop
+  // demo was removed because the visual was hard to make clean.
+  //   +0.0  → +0.85  cursor crosses calendar
+  //   +0.85 → +1.30  hover Noah's pill
+  //   +1.30 → end    Noah selected (slight lift)
+  const listHoverIdx    = (lt > T.s5Start + 0.85 && lt < T.s5Start + 1.30) ? 0 : -1;
+  const listSelectedIdx = lt > T.s5Start + 1.30 ? 0 : -1;
+  const calVibrateK     = 0;
+  const calDragK        = 0;
+  const calSettleK      = 0;
+
+  // ──────────── Cursor path: DOM-anchored ────────────
+  // Each waypoint references a `data-cursor-target` key (or an absolute coord).
+  // Coordinates are resolved per-frame from getBoundingClientRect against the
+  // stage element, eliminating manual layout math.
+  // Waypoint shape: [time, target, opacity, dx?, dy?]
+  // - target: string key (e.g. 'step1-search') OR {x, y} for absolute stage coords
+  // - dx/dy:  optional offset added to the resolved point (used for approach arcs)
+  const OFF = { x: SCENE * 0.5, y: SCENE + 60 }; // off-stage rest position (scene coords)
+
+  const path = [
+    [0.0,              OFF, 0],
+    [T.s1End - 1.4,    OFF, 0],
+    [T.s1End - 0.5,    'step1-search', 1],
+    [T.s1End - 0.05,   'step1-search', 1], // tap Search
+
+    [T.s2Start + 0.5,  'step2-plus', 0.5, -200, 240],
+    [T.s2Start + 1.4,  'step2-plus', 1],
+    [T.s2Start + 1.65, 'step2-plus', 1],   // tap +
+
+    // Move down to the Room dropdown that just appeared inside the Single card
+    [T.s2Start + 2.4,  'step2-room-select', 1],
+    [T.s2Start + 2.6,  'step2-room-select', 1],   // tap select → opens
+    // Hover Room 1 (Cleaned), then tap it
+    [T.s2Start + 2.85, 'step2-room-option1', 1],
+    [T.s2Start + 3.1,  'step2-room-option1', 1],  // tap Room 1
+
+    [T.s2Start + 4.0,  'step2-next', 1],
+    [T.s2Start + 4.2,  'step2-next', 1],   // tap Next
+
+    [T.s3Start + 0.5,  { x: SCENE * 0.55, y: SCENE * 0.55 }, 0.5],
+    [T.s3Start + 2.05, 'step3-save', 1],
+    [T.s3Start + 2.25, 'step3-save', 1],   // tap Save
+
+    [T.s4Start + 0.5,  { x: SCENE * 0.4, y: SCENE * 0.5 }, 0.5],
+    [T.s4Start + 1.5,  'sb-calendar', 1],
+    [T.s4Start + 1.7,  'sb-calendar', 1],  // tap Calendar
+
+    [T.s5Start + 0.4,  { x: SCENE * 0.45, y: SCENE * 0.5 }, 0.5],
+    [T.s5Start + 1.10, 'cal-focus', 1],
+    [T.s5Start + 1.30, 'cal-focus', 1],   // tap Noah's pill → opens booking detail
+    [T.s5Start + 1.55, 'cal-focus', 0.6, 0, 30],
+
+    [T.s6Start + 0.6,  'step6-title', 1],
+    [T.s6Start + 2.0,  'step6-title', 1],
+
+    // Step 7 — sidebar reopens, cursor heads to Statistics and taps it
+    [T.s7Start + 0.1,  'step6-title', 0.4],   // ease away from title
+    [T.s7Start + 0.4,  { x: SCENE * 0.4, y: SCENE * 0.5 }, 0.6],
+    [T.s7Start + 1.05, 'sb-statistics', 1],
+    [T.s7Start + 1.60, 'sb-statistics', 1],   // hold the hover
+    [T.s7Start + 1.95, 'sb-statistics', 1],   // tap Statistics
+
+    // Step 8 — cursor recedes; the dashboard speaks for itself
+    [T.s8Start + 0.5,  'sb-statistics', 0.3, 280, 60],
+    [T.loop,           OFF, 0],
+  ];
+
+  // Resolve a waypoint's target → {x, y} in stage coordinates.
+  // Returns the last-known good coords if the target isn't currently mounted
+  // (keeps the cursor from snapping to (0,0) during step transitions).
+  const stageRef = React.useRef(null);
+  const lastResolvedRef = React.useRef({});
+  // Force one extra render after mount so stageRef is populated and the
+  // very first frame of resolve() actually finds DOM targets.
+  const [, _forceTick] = React.useReducer(x => x + 1, 0);
+  React.useLayoutEffect(() => { _forceTick(); }, []);
+  const resolve = (target, dx = 0, dy = 0) => {
+    if (target && typeof target === 'object' && 'x' in target) {
+      return { x: target.x + dx, y: target.y + dy };
+    }
+    const stage = stageRef.current;
+    if (stage) {
+      const el = stage.querySelector(`[data-cursor-target="${target}"]`);
+      if (el) {
+        const sb = stage.getBoundingClientRect();
+        const r  = el.getBoundingClientRect();
+        // The stageRef div is SCENE×SCENE in design coords, then scaled to fit
+        // the canvas. Use its rendered width vs. SCENE to map viewport px
+        // back to scene px.
+        const scale = sb.width / SCENE || 1;
+        const x = (r.left + r.width  / 2 - sb.left) / scale + dx;
+        const y = (r.top  + r.height / 2 - sb.top)  / scale + dy;
+        lastResolvedRef.current[target] = { x, y };
+        return { x, y };
+      }
+    }
+    return lastResolvedRef.current[target] || { x: SCENE / 2, y: SCENE / 2 };
+  };
+
+  const cur = (() => {
+    let prev = path[0], next = path[path.length - 1];
+    for (let i = 0; i < path.length - 1; i++) {
+      if (lt >= path[i][0] && lt <= path[i + 1][0]) { prev = path[i]; next = path[i + 1]; break; }
+    }
+    const pp = resolve(prev[1], prev[3] || 0, prev[4] || 0);
+    const np = resolve(next[1], next[3] || 0, next[4] || 0);
+    const span = Math.max(0.0001, next[0] - prev[0]);
+    const k = Easing.easeInOutCubic(Math.min(1, Math.max(0, (lt - prev[0]) / span)));
+    return { x: lerp(pp.x, np.x, k), y: lerp(pp.y, np.y, k), o: lerp(prev[2], next[2], k) };
+  })();
+
+  const tapMoments = [
+    T.s1End - 0.05,
+    T.s2Start + 1.65,
+    T.s2Start + 2.6,    // tap dropdown
+    T.s2Start + 3.1,    // tap Room 1
+    T.s2Start + 4.2,    // tap Next
+    T.s3Start + 2.25,
+    T.s4Start + 1.7,
+    T.s5Start + 1.30,
+    T.s7Start + 1.25,
+  ];
+  const isTapping = tapMoments.some(m => lt >= m - 0.05 && lt <= m + 0.18);
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: 'transparent', overflow: 'hidden' }}>
+      {/* Square 1080×1080 stage. The scene's 1080-wide design coord system
+          is scaled by SCENE_SCALE to render into a 670×920 portrait region
+          centered inside the 1080-square; the surrounding margins stay
+          transparent so the asset composites over a hero background. */}
+      <div ref={stageRef} style={{
+        position: 'absolute',
+        left: INNER_OFFSET_X,
+        top:  INNER_OFFSET_Y,
+        width:  SCENE_W,
+        height: SCENE_H,
+        transform: `scale(${SCENE_SCALE})`,
+        transformOrigin: '0 0',
+        overflow: 'hidden',
+        background: 'transparent',
+      }}>
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: `radial-gradient(ellipse at 50% 30%, rgba(248,124,86,0.05) 0%, rgba(248,124,86,0) 50%)`,
+      }} />
+
+      {v12 > 0 && <Step12_Combined t={lt} visible={v12} nextPulse={step2NextPulse} addedOverride={false} />}
+      {v3Under > 0 && <Step3_PersonalData t={lt - T.s3Start} visible={v3Under} savePulse={step3SavePulse} />}
+      {v5 > 0 && <Step5_BookingsList t={lt - T.s5Start} visible={v5} hoverIdx={listHoverIdx} selectedIdx={listSelectedIdx} vibrateK={calVibrateK} dragK={calDragK} settleK={calSettleK} />}
+      {v6 > 0 && <Step6_BookingDetail t={lt - T.s6Start} visible={v6} />}
+      {v8 > 0 && <Step8_Statistics t={lt - T.s8Start} visible={v8} />}
+
+      {sidebarK > 0.001 && (
+        <Sidebar
+          activeId={sidebarActive}
+          hoveredId={sidebarHover}
+          slideK={sidebarK}
+          introT={lt - (T.s4Start + 0.55)}
+        />
+      )}
+
+      <SaveToast k={toastK} />
+
+      <Cursor x={cur.x} y={cur.y} opacity={lt >= T.s8Start ? 0 : cur.o} tap={isTapping && lt < T.s8Start} />
+      </div>
+    </div>
+  );
+};
+
+// ──────────────── Tweaks / App ────────────────
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "singleImg": "uploads/tweak-singleImg.png",
+  "doubleImg": "uploads/tweak-doubleImg.png",
+  "queenImg": "uploads/tweak-queenImg.png",
+  "bgMode": "none"
+}/*EDITMODE-END*/;
+
+function RoomImageTweak({ label, value, onChange }) {
+  const inputRef = React.useRef(null);
+  const onFile = (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => onChange(String(reader.result));
+    reader.readAsDataURL(f);
+  };
+  return (
+    <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(14,34,53,0.08)' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#0E2235', letterSpacing: 0.2, marginBottom: 6 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{
+          width: 52, height: 40, borderRadius: 6,
+          background: value ? `url(${value}) center/cover` : '#F0F2F5',
+          border: '1px solid rgba(14,34,53,0.12)', flexShrink: 0,
+        }} />
+        <button onClick={() => inputRef.current && inputRef.current.click()} style={{
+          flex: 1, height: 28, borderRadius: 6, border: '1px solid rgba(14,34,53,0.15)',
+          background: 'white', fontSize: 11, fontWeight: 600, color: '#0E2235', cursor: 'pointer',
+        }}>{value ? 'Replace' : 'Upload'}</button>
+        {value && (
+          <button onClick={() => onChange('')} style={{
+            height: 28, padding: '0 8px', borderRadius: 6, border: '1px solid rgba(14,34,53,0.15)',
+            background: 'white', fontSize: 11, fontWeight: 600, color: '#8A2828', cursor: 'pointer',
+          }}>Reset</button>
+        )}
+        <input ref={inputRef} type="file" accept="image/*" onChange={onFile} style={{ display: 'none' }} />
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Offline frame-by-frame MP4 export.
+// No screen-share, no user prompts, no chrome bleed-through. Steps the Stage
+// timeline deterministically frame-by-frame, rasterizes the rounded canvas
+// element with html-to-image, encodes H.264 via WebCodecs, muxes to .mp4.
+// ─────────────────────────────────────────────────────────────────────────────
+async function exportVideoOffline(durationSec = DURATION, fps = 30) {
+  if (typeof VideoEncoder === 'undefined' || typeof window.Mp4Muxer === 'undefined' || typeof window.htmlToImage === 'undefined') {
+    alert(
+      'Offline MP4 export needs WebCodecs + html-to-image + mp4-muxer.\n\n' +
+      'WebCodecs is supported in Chrome, Edge, and Opera. If you\'re on Safari/Firefox, ' +
+      'please use Chrome to render the MP4.'
+    );
+    return;
+  }
+
+  const stageEl = document.querySelector('[data-stage-canvas="true"]');
+  if (!stageEl) { alert('Stage element not found.'); return; }
+
+  // Pause playback and freeze at t=0 while we render.
+  window.dispatchEvent(new CustomEvent('animstage:set', { detail: { time: 0, playing: false } }));
+
+  // ── Progress overlay ───────────────────────────────────────────────────────
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `
+    position: fixed; inset: 0; z-index: 99999;
+    background: rgba(14,34,53,0.92);
+    display: flex; align-items: center; justify-content: center;
+    font-family: Inter, system-ui, sans-serif; color: white;
+  `;
+  overlay.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:18px;padding:36px 48px;border-radius:16px;background:#0a1929;border:1px solid rgba(255,255,255,0.1);min-width:360px;">
+      <div style="font-size:18px;font-weight:700;letter-spacing:0.2px;">Rendering MP4…</div>
+      <div id="__ovl_label" style="font-size:13px;color:#9bb0c5;font-variant-numeric:tabular-nums;">Initializing</div>
+      <div style="width:320px;height:8px;background:rgba(255,255,255,0.08);border-radius:999px;overflow:hidden;">
+        <div id="__ovl_bar" style="height:100%;width:0%;background:linear-gradient(90deg,#1FBF7A,#3A9DD6);transition:width 0.1s;"></div>
+      </div>
+      <div style="font-size:11px;color:#5d7895;">Don't close this tab. ~1 min for 24.0s.</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const ovlBar = overlay.querySelector('#__ovl_bar');
+  const ovlLabel = overlay.querySelector('#__ovl_label');
+  const setProgress = (frame, total, phase) => {
+    ovlBar.style.width = (frame / total * 100) + '%';
+    ovlLabel.textContent = phase ? phase : `Frame ${frame} / ${total}`;
+  };
+
+  try {
+    const W = STAGE_W, H = STAGE_H;
+    const totalFrames = Math.round(durationSec * fps);
+    const frameDurUs = Math.round(1_000_000 / fps);
+
+    // ── Muxer + encoder setup ────────────────────────────────────────────────
+    const muxer = new window.Mp4Muxer.Muxer({
+      target: new window.Mp4Muxer.ArrayBufferTarget(),
+      video: { codec: 'avc', width: W, height: H, frameRate: fps },
+      fastStart: 'in-memory',
+    });
+    const encoder = new VideoEncoder({
+      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+      error: (e) => { console.error('VideoEncoder error:', e); },
+    });
+    encoder.configure({
+      codec: 'avc1.640028',     // H.264 High @ Level 4.0
+      width: W, height: H,
+      bitrate: 12_000_000,
+      framerate: fps,
+      avc: { format: 'avc' },
+    });
+
+    // ── Pre-warm html-to-image (first call is slow due to font/css inlining) ─
+    setProgress(0, totalFrames, 'Warming up…');
+    await window.htmlToImage.toCanvas(stageEl, {
+      width: W, height: H, pixelRatio: 1, cacheBust: false,
+      style: { transform: 'none' },
+    });
+
+    // ── Frame loop ───────────────────────────────────────────────────────────
+    for (let i = 0; i < totalFrames; i++) {
+      const t = i / fps;
+      // Drive the timeline.
+      window.dispatchEvent(new CustomEvent('animstage:set', { detail: { time: t, playing: false } }));
+      // Wait two rAFs so React commits + browser paints the new frame.
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const frameCanvas = await window.htmlToImage.toCanvas(stageEl, {
+        width: W, height: H,
+        pixelRatio: 1,
+        cacheBust: false,
+        style: { transform: 'none' }, // strip the Stage's auto-scale
+      });
+
+      const videoFrame = new VideoFrame(frameCanvas, {
+        timestamp: i * frameDurUs,
+        duration: frameDurUs,
+      });
+      // Force a keyframe every 2 seconds for seekability.
+      encoder.encode(videoFrame, { keyFrame: i % (fps * 2) === 0 });
+      videoFrame.close();
+
+      setProgress(i + 1, totalFrames);
+
+      // Backpressure: if encoder queue grows, give it a tick to drain.
+      if (encoder.encodeQueueSize > 8) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    setProgress(totalFrames, totalFrames, 'Finalizing…');
+    await encoder.flush();
+    muxer.finalize();
+
+    // ── Download ─────────────────────────────────────────────────────────────
+    const buffer = muxer.target.buffer;
+    const blob = new Blob([buffer], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'sirvoy-flow.mp4';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+    setProgress(totalFrames, totalFrames, 'Done — file saved');
+    await new Promise(r => setTimeout(r, 600));
+  } catch (err) {
+    console.error(err);
+    alert('Render failed:\n' + (err && err.message || err));
+  } finally {
+    overlay.remove();
+    // Resume playback from the start.
+    window.dispatchEvent(new CustomEvent('animstage:set', { detail: { time: 0, playing: true } }));
+  }
+}
+
+// Real-time MP4 capture via screen-share. Kept as a fallback for browsers
+// without WebCodecs support. Saves as .mp4 (Chrome) or .webm.
+async function recordVideo(durationSec = DURATION) {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 30, width: 1920, height: 1080 },
+      audio: false,
+      preferCurrentTab: true,
+    });
+  } catch (err) {
+    alert(
+      'Recording was cancelled or blocked.\n\n' +
+      'If you don\'t see a "share tab" prompt, the embedded preview may be ' +
+      'blocking screen capture. Open this page in a standalone browser tab ' +
+      '(↗ icon at the top of the preview) and try again.\n\n' +
+      (err && err.message || err)
+    );
+    return;
+  }
+
+  // Find the stage so we can crop/scale to 1080x1080
+  const stage = document.querySelector('[data-stage-canvas="true"]');
+
+  const srcVideo = document.createElement('video');
+  srcVideo.srcObject = stream; srcVideo.muted = true;
+  await srcVideo.play();
+  await new Promise(r => srcVideo.onloadedmetadata = r);
+
+  const W = 1080, H = 1080;
+  const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  let running = true;
+  const drawLoop = () => {
+    if (!running) return;
+    const sw = srcVideo.videoWidth, sh = srcVideo.videoHeight;
+    if (sw && sh) {
+      // If we can locate the stage on screen, crop to it; otherwise letterbox
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+      if (stage) {
+        const rect = stage.getBoundingClientRect();
+        const ratioX = sw / window.innerWidth;
+        const ratioY = sh / window.innerHeight;
+        const cx = rect.left * ratioX;
+        const cy = rect.top * ratioY;
+        const cw = rect.width * ratioX;
+        const ch = rect.height * ratioY;
+        const scale = Math.min(W / cw, H / ch);
+        const dw = cw * scale, dh = ch * scale;
+        const dx = (W - dw) / 2, dy = (H - dh) / 2;
+        ctx.drawImage(srcVideo, cx, cy, cw, ch, dx, dy, dw, dh);
+      } else {
+        const scale = Math.max(W / sw, H / sh);
+        const dw = sw * scale, dh = sh * scale;
+        const dx = (W - dw) / 2, dy = (H - dh) / 2;
+        ctx.drawImage(srcVideo, dx, dy, dw, dh);
+      }
+    }
+    requestAnimationFrame(drawLoop);
+  };
+  drawLoop();
+
+  const mimeCandidates = ['video/mp4;codecs=avc1.42E01E','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+  const mimeType = mimeCandidates.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+  const ext = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
+
+  const canvasStream = canvas.captureStream(30);
+  const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: 14_000_000 });
+  const chunks = [];
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  const stopped = new Promise((resolve) => recorder.onstop = resolve);
+
+  // Reset the stage to t=0 so the recording starts at the beginning
+  window.dispatchEvent(new CustomEvent('animstage:set', { detail: { time: 0, playing: true } }));
+
+  // Progress pill
+  const progress = document.createElement('div');
+  progress.style.cssText = 'position:fixed;left:50%;top:24px;transform:translateX(-50%);z-index:99999;background:#0E2235;color:white;padding:10px 18px;border-radius:999px;font:600 13px system-ui;box-shadow:0 6px 20px rgba(0,0,0,0.3)';
+  progress.textContent = 'Recording…';
+  document.body.appendChild(progress);
+
+  recorder.start();
+  const startedAt = performance.now();
+  const tick = setInterval(() => {
+    const pct = Math.min(100, Math.round((performance.now() - startedAt) / (durationSec * 1000) * 100));
+    progress.textContent = `Recording ${pct}%`;
+  }, 200);
+
+  setTimeout(() => {
+    clearInterval(tick);
+    recorder.stop();
+    running = false;
+    stream.getTracks().forEach(t => t.stop());
+    canvasStream.getTracks().forEach(t => t.stop());
+  }, durationSec * 1000 + 200);
+
+  await stopped;
+  progress.textContent = 'Encoding…';
+  const blob = new Blob(chunks, { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `sirvoy-flow.${ext}`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  progress.remove();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Transparent WebM export (alpha channel preserved).
+// Renders frame-by-frame to PNG, packs them into a WebM via MediaRecorder
+// reading from a canvas with VP9 + alpha support. Chrome/Edge only.
+// ─────────────────────────────────────────────────────────────────────────────
+async function exportTransparentWebM(durationSec = DURATION, fps = 30) {
+  if (typeof window.htmlToImage === 'undefined') {
+    alert('Transparent WebM export needs html-to-image. Use Chrome/Edge.');
+    return;
+  }
+
+  const stageEl = document.querySelector('[data-stage-canvas="true"]');
+  if (!stageEl) { alert('Stage element not found.'); return; }
+
+  // MediaRecorder with VP9 + alpha. Chrome supports 'video/webm;codecs=vp9'
+  // with the alpha channel from the source canvas when alpha:true.
+  const mime = 'video/webm;codecs=vp9';
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported(mime)) {
+    alert('Your browser does not support VP9 WebM recording. Use Chrome or Edge.');
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent('animstage:set', { detail: { time: 0, playing: false } }));
+
+  // Progress overlay
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `
+    position: fixed; inset: 0; z-index: 99999;
+    background: rgba(14,34,53,0.92);
+    display: flex; align-items: center; justify-content: center;
+    font-family: Inter, system-ui, sans-serif; color: white;
+  `;
+  overlay.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:18px;padding:36px 48px;border-radius:16px;background:#0a1929;border:1px solid rgba(255,255,255,0.1);min-width:360px;">
+      <div style="font-size:18px;font-weight:700;">Rendering transparent WebM…</div>
+      <div id="__wbm_label" style="font-size:13px;color:#9bb0c5;font-variant-numeric:tabular-nums;">Initializing</div>
+      <div style="width:320px;height:8px;background:rgba(255,255,255,0.08);border-radius:999px;overflow:hidden;">
+        <div id="__wbm_bar" style="height:100%;width:0%;background:linear-gradient(90deg,#3A9DD6,#1FBF7A);transition:width 0.1s;"></div>
+      </div>
+      <div style="font-size:11px;color:#5d7895;">Don't close this tab.</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const bar = overlay.querySelector('#__wbm_bar');
+  const label = overlay.querySelector('#__wbm_label');
+
+  try {
+    const W = STAGE_W, H = STAGE_H;
+    const totalFrames = Math.round(durationSec * fps);
+
+    // Drawing canvas — must have alpha=true for transparency to survive into VP9.
+    const drawCanvas = document.createElement('canvas');
+    drawCanvas.width = W; drawCanvas.height = H;
+    const ctx = drawCanvas.getContext('2d', { alpha: true });
+
+    // Stream from the canvas; MediaRecorder reads frames at its own cadence.
+    const stream = drawCanvas.captureStream(0);
+    const track = stream.getVideoTracks()[0];
+    // requestFrame() is how we manually advance the stream in lockstep with our render loop.
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise(r => recorder.onstop = r);
+    recorder.start();
+
+    // Pre-warm html-to-image
+    label.textContent = 'Warming up…';
+    await window.htmlToImage.toCanvas(stageEl, { width: W, height: H, pixelRatio: 1, cacheBust: false, backgroundColor: null, style: { transform: 'none' } });
+
+    for (let i = 0; i < totalFrames; i++) {
+      const t = i / fps;
+      window.dispatchEvent(new CustomEvent('animstage:set', { detail: { time: t, playing: false } }));
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const frameCanvas = await window.htmlToImage.toCanvas(stageEl, {
+        width: W, height: H, pixelRatio: 1, cacheBust: false,
+        backgroundColor: null, // critical — preserves alpha
+        style: { transform: 'none' },
+      });
+
+      ctx.clearRect(0, 0, W, H);
+      ctx.drawImage(frameCanvas, 0, 0, W, H);
+      track.requestFrame && track.requestFrame();
+
+      // Hold long enough for the recorder to consume the frame at our fps cadence.
+      await new Promise(r => setTimeout(r, 1000 / fps));
+
+      bar.style.width = ((i + 1) / totalFrames * 100) + '%';
+      label.textContent = `Frame ${i + 1} / ${totalFrames}`;
+    }
+
+    label.textContent = 'Finalizing…';
+    recorder.stop();
+    await stopped;
+
+    const blob = new Blob(chunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'sirvoy-flow-transparent.webm';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+    label.textContent = 'Done — file saved';
+    await new Promise(r => setTimeout(r, 600));
+  } catch (err) {
+    console.error(err);
+    alert('Transparent WebM render failed:\n' + (err && err.message || err));
+  } finally {
+    overlay.remove();
+    window.dispatchEvent(new CustomEvent('animstage:set', { detail: { time: 0, playing: true } }));
+  }
+}
+
+function App() {
+  const [tw, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const roomImages = { single: tw.singleImg, double: tw.doubleImg, queen: tw.queenImg };
+  const bg = tw.bgMode === 'green' ? '#00FF00'
+           : tw.bgMode === 'cream' ? C.bg
+           : tw.bgMode === 'navy'  ? '#0E2235'
+           : 'transparent';
+  return (
+    <TweaksContext.Provider value={roomImages}>
+      <Stage width={STAGE_W} height={STAGE_H} duration={DURATION} background={bg} loop={true}>
+        <Sprite start={0} end={DURATION}><FlowScene /></Sprite>
+      </Stage>
+      <TweaksPanel title="Booking flow video">
+        <TweakSection label="Export" />
+        <TweakButton label="Render MP4 (no transparency)" onClick={() => exportVideoOffline()} />
+        <TweakButton label="Render WebM (transparent ✓)"  onClick={() => exportTransparentWebM()} secondary />
+        <div style={{fontSize:11, color:'#9bb0c5', padding:'4px 12px 8px', lineHeight:1.4}}>
+          MP4/H.264 cannot store an alpha channel. For a transparent video,
+          render WebM (VP9 + alpha) — works in Chrome/Edge and imports cleanly
+          into Premiere, After Effects, DaVinci Resolve and Final Cut.
+        </div>
+        <TweakSection label="Export background" />
+        <TweakRadio label="Background" value={tw.bgMode}
+                    options={['green', 'cream', 'navy', 'none']}
+                    onChange={(v) => setTweak('bgMode', v)} />
+        <TweakSection label="Room photos" />
+        <RoomImageTweak label="Single room" value={tw.singleImg} onChange={(v) => setTweak('singleImg', v)} />
+        <RoomImageTweak label="Double room" value={tw.doubleImg} onChange={(v) => setTweak('doubleImg', v)} />
+        <RoomImageTweak label="Queen room"  value={tw.queenImg}  onChange={(v) => setTweak('queenImg', v)} />
+      </TweaksPanel>
+    </TweaksContext.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
