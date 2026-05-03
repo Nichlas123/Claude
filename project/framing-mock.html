@@ -1,0 +1,177 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Framing mock — 1080×1080 with 670×920 scene</title>
+<style>
+  html, body { margin: 0; padding: 0; min-height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; background: #faf4ec; color: #1a2530; }
+  .page {
+    max-width: 1280px; margin: 0 auto; padding: 48px 32px;
+    display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center;
+  }
+  h1 { font-size: 56px; line-height: 1.05; letter-spacing: -0.02em; font-weight: 800; margin: 0 0 16px; }
+  h1 em { font-style: normal; background: #b9d6ff; padding: 0 6px; border-radius: 2px; }
+  p.lede { font-size: 19px; line-height: 1.5; max-width: 460px; margin: 0 0 24px; color: #2c3e50; }
+  .cta { display: inline-block; background: #1a2530; color: white; padding: 14px 28px; border-radius: 999px; font-weight: 600; }
+
+  /* Frame visualizer */
+  .frame-host {
+    position: relative;
+    width: 540px;          /* visual size of the 1080×1080 outer (50% scale) */
+    height: 540px;
+    margin: 0 auto;
+  }
+  .outer {
+    position: absolute; inset: 0;
+    /* faint dashed outline so user sees the 1080 boundary */
+    outline: 2px dashed rgba(217, 70, 70, 0.55);
+    outline-offset: 0;
+  }
+  .outer::before {
+    content: "1080 × 1080 — transparent outer frame";
+    position: absolute; left: 8px; top: 8px;
+    font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+    color: #b04040; background: rgba(255,255,255,0.85);
+    padding: 3px 8px; border-radius: 4px;
+  }
+  .scene {
+    position: absolute;
+    /* 670 × 920 inside 1080 × 1080, centered → at 50% display: 335 × 460, offset 205,80 */
+    left: calc((1080px - 670px) / 2 / 2);
+    top:  calc((1080px - 920px) / 2 / 2);
+    width: calc(670px / 2);
+    height: calc(920px / 2);
+    background: white;
+    border-radius: 20px;
+    box-shadow: 0 12px 40px rgba(14,34,53,0.18), 0 4px 12px rgba(14,34,53,0.08);
+    overflow: hidden;
+  }
+  .scene::after {
+    content: "670 × 920 — actual scene";
+    position: absolute; left: 8px; bottom: 8px;
+    font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+    color: #1a2530; background: rgba(255,255,255,0.92);
+    padding: 3px 8px; border-radius: 4px;
+  }
+
+  /* Fake booking form preview inside the scene */
+  .form {
+    padding: 36px 28px;
+    display: flex; flex-direction: column; gap: 14px;
+    background: linear-gradient(180deg, #f3f8fd 0%, #e8eef5 100%);
+    height: 100%;
+    box-sizing: border-box;
+  }
+  .form h3 { margin: 0 0 6px; font-size: 18px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field { background: white; border: 1px solid #d8e0e8; border-radius: 8px; padding: 10px 12px; font-size: 11px; color: #5a6878; }
+  .search { background: #2da599; color: white; text-align: center; padding: 12px; border-radius: 8px; font-size: 12px; font-weight: 600; margin-top: 4px;}
+  .room { background: white; border-radius: 12px; padding: 10px; display: flex; gap: 10px; align-items: center; margin-top: 6px; }
+  .room .img { width: 48px; height: 48px; border-radius: 6px; background: linear-gradient(135deg, #c8d6e5, #95a5a6); flex-shrink: 0; }
+  .room .meta { flex: 1; font-size: 11px; }
+  .room .meta .name { font-weight: 600; color: #1a2530; margin-bottom: 4px; }
+  .room .meta .bar { height: 6px; background: #e0e6ed; border-radius: 3px; margin-bottom: 4px; width: 80%; }
+  .room .meta .bar.short { width: 50%; }
+  .price { font-size: 11px; font-weight: 600; }
+
+  /* Toggle for offset variants */
+  .controls {
+    margin-top: 16px;
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .controls button {
+    background: white; border: 1px solid #d8e0e8; padding: 8px 14px; border-radius: 6px;
+    font-size: 12px; cursor: pointer;
+  }
+  .controls button.active { background: #1a2530; color: white; border-color: #1a2530; }
+
+  .label-pos {
+    position: absolute; top: -28px; left: 0; right: 0;
+    text-align: center; font-size: 13px; color: #6c7a89;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+
+  .scene.offset-right {
+    left: calc(((1080px - 670px) / 2 + 80px) / 2);
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="copy">
+    <h1>The all-in-one Hotel Management <em>System</em></h1>
+    <p class="lede">Designed to help your hospitality business grow. Easy to learn and offers friendly support that will delight your guests.</p>
+    <a class="cta" href="#">Start a Free Trial</a>
+    <div class="controls">
+      <button class="active" data-pos="center">Center</button>
+      <button data-pos="right">Offset right (+80px)</button>
+    </div>
+    <p style="font-size: 12px; color: #6c7a89; margin-top: 16px; line-height: 1.5;">
+      Outer dashed box = full <strong>1080 × 1080</strong> transparent video frame.<br>
+      White card = the actual rendered <strong>670 × 920</strong> scene area.<br>
+      Shown at 50% display scale.
+    </p>
+  </div>
+
+  <div>
+    <div class="frame-host">
+      <div class="label-pos">1080 × 1080 frame · scene 670 × 920</div>
+      <div class="outer"></div>
+      <div class="scene" id="scene">
+        <div class="form">
+          <h3>New Booking</h3>
+          <div class="row">
+            <div class="field">Check-in</div>
+            <div class="field">Check-out</div>
+          </div>
+          <div class="row">
+            <div class="field">Category</div>
+            <div class="field">Number of guests</div>
+          </div>
+          <div class="search">Search</div>
+          <div class="room">
+            <div class="img"></div>
+            <div class="meta">
+              <div class="name">Single room</div>
+              <div class="bar"></div>
+              <div class="bar short"></div>
+            </div>
+            <div class="price">€100.00</div>
+          </div>
+          <div class="room">
+            <div class="img"></div>
+            <div class="meta">
+              <div class="name">Double room</div>
+              <div class="bar"></div>
+              <div class="bar short"></div>
+            </div>
+            <div class="price">€140.00</div>
+          </div>
+          <div class="room">
+            <div class="img"></div>
+            <div class="meta">
+              <div class="name">Queen room</div>
+              <div class="bar"></div>
+              <div class="bar short"></div>
+            </div>
+            <div class="price">€180.00</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const scene = document.getElementById('scene');
+  document.querySelectorAll('.controls button').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('.controls button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      if (b.dataset.pos === 'right') scene.classList.add('offset-right');
+      else scene.classList.remove('offset-right');
+    });
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sirvoy Wireframes — Variations</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0E2235; font-family: Inter, system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="shared.jsx"></script>
+<script type="text/babel" src="channel-variations.jsx"></script>
+<script type="text/babel" src="calendar-variations.jsx"></script>
+
+<script type="text/babel">
+const { useState } = React;
+
+const DEFAULTS = /*EDITMODE-BEGIN*/{
+  "density": "comfortable",
+  "accentHue": 26,
+  "showAnnotations": true
+}/*EDITMODE-END*/;
+
+function Root() {
+  const [tweaks, setTweak] = useTweaks(DEFAULTS);
+
+  const art = (w, h) => ({ width: w, height: h });
+
+  return (
+    <>
+      <DesignCanvas title="Sirvoy — Wireframe explorations" subtitle="8 variations across Channel Manager and Front Desk · click any artboard to focus">
+        <DCSection id="channel" title="Channel Manager">
+          <DCArtboard id="cm-v1" label="V1 · Unified table" {...art(1280, 820)}>
+            <CMV1_Table />
+          </DCArtboard>
+          <DCArtboard id="cm-v2" label="V2 · Health dashboard" {...art(1280, 820)}>
+            <CMV2_Health />
+          </DCArtboard>
+          <DCArtboard id="cm-v3" label="V3 · Master / detail" {...art(1280, 820)}>
+            <CMV3_Detail />
+          </DCArtboard>
+          <DCArtboard id="cm-v4" label="V4 · Grouped by status" {...art(1280, 820)}>
+            <CMV4_Grouped />
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="calendar" title="Front Desk / Calendar">
+          <DCArtboard id="cal-v1" label="V1 · Timeline + inspector" {...art(1280, 820)}>
+            <CalV1_Inspector />
+          </DCArtboard>
+          <DCArtboard id="cal-v2" label="V2 · Occupancy heatmap" {...art(1280, 820)}>
+            <CalV2_Heatmap />
+          </DCArtboard>
+          <DCArtboard id="cal-v3" label="V3 · Kanban by status" {...art(1280, 820)}>
+            <CalV3_Kanban />
+          </DCArtboard>
+          <DCArtboard id="cal-v4" label="V4 · Flipped axis" {...art(1280, 820)}>
+            <CalV4_Flipped />
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="motion" title="End-to-end motion study (20s)">
+          <DCArtboard id="video" label="New booking → Calendar → Channel sync" {...art(1280, 820)}>
+            <iframe src="video.html" style={{ width: '100%', height: '100%', border: 'none' }} />
+          </DCArtboard>
+        </DCSection>
+      </DesignCanvas>
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection title="Presentation">
+          <TweakToggle label="Show annotations" value={tweaks.showAnnotations} onChange={v => setTweak('showAnnotations', v)} />
+          <TweakRadio label="Density" value={tweaks.density} onChange={v => setTweak('density', v)} options={[
+            { value: 'compact', label: 'Compact' },
+            { value: 'comfortable', label: 'Comfortable' },
+          ]} />
+        </TweakSection>
+        <TweakSection title="Canvas tip">
+          <div style={{ fontSize: 12, color: '#6A7A8C', lineHeight: 1.5 }}>
+            Click any artboard to open it fullscreen. Drag to reorder. Scroll to pan, ⌘/Ctrl + scroll to zoom.
+          </div>
+        </TweakSection>
+      </TweaksPanel>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
+</script>
+</body>
+</html>

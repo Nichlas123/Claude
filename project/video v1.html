@@ -1,0 +1,1075 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sirvoy — End-to-end motion study</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0E2235; font-family: Inter, system-ui, sans-serif; overflow: hidden; }
+  @keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="animations.jsx"></script>
+<script type="text/babel" src="shared.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+
+<script type="text/babel">
+const tween = (t, start, end, from, to, ease = Easing.easeOutCubic) => {
+  if (t <= start) return from;
+  if (t >= end) return to;
+  const k = (t - start) / (end - start);
+  return from + (to - from) * ease(k);
+};
+const clampK = (t, start, end) => Math.max(0, Math.min(1, (t - start) / Math.max(0.0001, end - start)));
+
+const STAGE_W = 1080;
+const STAGE_H = 1080;
+
+const SirvoySymbol = ({ size = 54, radius = 14 }) => (
+  <svg viewBox="0 0 1234 1233" width={size} height={size} style={{ borderRadius: radius, display: 'block' }}>
+    <rect x="1" width="1233" height="1233" fill="#F87C56" rx="120"/>
+    <path d="M628.539 361.265L692.781 264.811C695.49 260.752 692.564 255.322 687.685 255.322H559.207C554.308 255.322 551.395 260.752 554.098 264.811L618.333 361.265C620.753 364.904 626.112 364.904 628.539 361.265Z" fill="white"/>
+    <path d="M855.975 658.337C696.928 669.898 535.901 669.629 372.79 658.199C362.348 656.789 360.389 648.316 360.54 640.768C379.333 515.368 486.421 419.223 615.773 419.223C746.198 419.223 857.632 516.489 871.447 643.877C872.808 656.251 859.677 658.002 855.975 658.337Z" fill="white"/>
+    <path d="M353.569 720.571C533.592 735.235 702.667 734.914 879.211 720.08C896.104 718.663 900.799 721.057 906.092 731.313L959.998 829.695C967.257 848.673 959.892 853.959 940.028 856.307C730.908 880.964 513.622 880.518 287.511 855.271C266.332 852.929 270.52 838.312 273.341 832.102L327.549 733.169C333.25 721.391 342.982 719.699 353.569 720.571Z" fill="white"/>
+  </svg>
+);
+
+const SunsetLogo = ({ size = 'md' }) => {
+  const h = size === 'lg' ? 48 : size === 'sm' ? 28 : 36;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <svg viewBox="0 0 60 60" width={h} height={h}>
+        <defs>
+          <linearGradient id="sun" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stopColor="#F4B95A"/>
+            <stop offset="1" stopColor="#E86A3C"/>
+          </linearGradient>
+        </defs>
+        <circle cx="30" cy="36" r="16" fill="url(#sun)"/>
+        <rect x="4" y="40" width="52" height="2" fill="#2A3E55"/>
+        <rect x="4" y="45" width="40" height="1.5" fill="#2A3E55" opacity="0.6"/>
+        <rect x="14" y="49" width="32" height="1.5" fill="#2A3E55" opacity="0.4"/>
+      </svg>
+      <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1 }}>
+        <span style={{ fontFamily: '"Playfair Display", Georgia, serif', fontSize: h * 0.58, fontWeight: 700, color: '#2A3E55', letterSpacing: -0.5 }}>Sunset</span>
+        <span style={{ fontSize: h * 0.22, fontWeight: 600, color: '#B67845', letterSpacing: 3, textTransform: 'uppercase', marginTop: h * 0.08 }}>Hotels</span>
+      </div>
+    </div>
+  );
+};
+
+// Sidebar — use the actual Sirvoy sidebar image (scaled) so icons match the real system exactly.
+const SidebarReal = ({ active = 'calendar' }) => {
+  return (
+    <div style={{
+      width: 86, background: '#0E2235', flexShrink: 0, height: '100%',
+      position: 'relative', overflow: 'hidden',
+    }}>
+      <img
+        src="channels/sidebar-source.png?v=3"
+        alt="Sirvoy menu"
+        style={{
+          width: 'auto', height: '100%', display: 'block',
+          position: 'absolute', top: 0, left: 0,
+        }}
+      />
+    </div>
+  );
+};
+
+const CH_LOGOS = {
+  booking: 'channels/booking.png',
+  siteminder: 'channels/siteminder.png',
+  myallocator: 'channels/myallocator.png',
+  hostelworld: 'channels/hostelworld.png',
+  agoda: 'channels/agoda.png',
+  airbnb: 'channels/airbnb.png',
+  expedia: 'channels/expedia.png',
+};
+const CH_NAMES = {
+  booking: 'Booking.com',
+  siteminder: 'SiteMinder',
+  myallocator: 'MyAllocator',
+  hostelworld: 'Hostelworld',
+  agoda: 'Agoda',
+  airbnb: 'Airbnb',
+  expedia: 'Expedia',
+};
+const ChLogo = ({ id, height = 22 }) => (
+  <img src={CH_LOGOS[id]} alt={id} style={{ height, width: 'auto', display: 'block', objectFit: 'contain' }} />
+);
+
+const TweaksContext = React.createContext({ single: '', double: '', queen: '' });
+
+// ────────────────────────────── Scene 1: Booking engine ──────────────────────────────
+// Timeline (0 → 7s):
+//   0.0–1.4   Form fills: check-in, check-out, category, guests
+//   1.4–1.7   Search pulse
+//   1.7–2.6   Room cards appear
+//   2.6–3.2   "+" button on Single room pulses; row expands revealing Room dropdown + price
+//   3.2–3.7   Total bar slides up from bottom, Next pulses
+//   3.7–4.8   Card flips to guest-details view (name, email, phone fill in)
+//   4.8–5.2   Book now pulses
+//   5.2–7.0   Book now → ✓ Booked! confirmation
+const Scene1_Booking = () => {
+  const { localTime: t } = useSprite();
+  const roomImages = React.useContext(TweaksContext);
+  const fill = (start) => tween(t, start, start + 0.25, 0, 1);
+  const cardOpacity = tween(t, 0, 0.4, 0, 1);
+
+  const rooms = [
+    { name: 'Single room', price: '€148', id: 'single', img: roomImages.single || 'channels/room-single.jpg' },
+    { name: 'Double room', price: '€198', id: 'double', img: roomImages.double || 'channels/room-double.jpg' },
+    { name: 'Queen room', price: '€244', id: 'queen', img: roomImages.queen || 'channels/room-queen.jpg' },
+  ];
+
+  // Flip from step 1 (room select) → step 2 (guest details)
+  const flipK = clampK(t, 3.55, 3.95); // 0 → 1
+  const showDetails = flipK > 0.5;
+
+  // "+" expand for Single row
+  const expandK = clampK(t, 2.55, 3.1);
+
+  // Total bar reveal
+  const totalK = clampK(t, 3.15, 3.5);
+  const nextPulse = t > 3.45 && t < 3.65;
+
+  // Book pulse & confirm
+  const bookPulse = t > 5.0 && t < 5.2;
+  const booked = t > 5.2;
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0,
+      background: '#FAF7F2',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      {/* Phone bezel — fills the stage vertically */}
+      <div style={{
+        width: 480, height: 960,
+        background: '#0B0F14',
+        borderRadius: 64,
+        padding: 14,
+        boxShadow: '0 40px 80px rgba(14,34,53,0.28), 0 10px 24px rgba(14,34,53,0.14)',
+        position: 'relative',
+        opacity: cardOpacity,
+        transform: `translateY(${tween(t, 0, 0.5, 20, 0)}px) scale(${0.98 + 0.02 * cardOpacity})`,
+      }}>
+        {/* Side buttons */}
+        <div style={{ position: 'absolute', left: -3, top: 130, width: 3, height: 32, background: '#0B0F14', borderRadius: '2px 0 0 2px' }} />
+        <div style={{ position: 'absolute', left: -3, top: 180, width: 3, height: 54, background: '#0B0F14', borderRadius: '2px 0 0 2px' }} />
+        <div style={{ position: 'absolute', left: -3, top: 250, width: 3, height: 54, background: '#0B0F14', borderRadius: '2px 0 0 2px' }} />
+        <div style={{ position: 'absolute', right: -3, top: 200, width: 3, height: 80, background: '#0B0F14', borderRadius: '0 2px 2px 0' }} />
+
+        {/* Screen */}
+        <div style={{
+          width: '100%', height: '100%',
+          background: 'white',
+          borderRadius: 42,
+          overflow: 'hidden',
+          position: 'relative',
+          display: 'flex', flexDirection: 'column',
+        }}>
+          {/* Status bar */}
+          <div style={{
+            height: 46, flexShrink: 0,
+            display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+            padding: '0 26px 6px',
+            fontSize: 14, fontWeight: 700, color: TOKENS.text,
+            position: 'relative',
+          }}>
+            <span>9:41</span>
+            {/* Dynamic island */}
+            <div style={{
+              position: 'absolute', left: '50%', top: 8,
+              transform: 'translateX(-50%)',
+              width: 110, height: 30, borderRadius: 20,
+              background: '#0B0F14',
+            }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              {/* signal */}
+              <svg width="16" height="10" viewBox="0 0 16 10"><g fill={TOKENS.text}><rect x="0" y="7" width="3" height="3" rx="0.5" /><rect x="4" y="5" width="3" height="5" rx="0.5" /><rect x="8" y="3" width="3" height="7" rx="0.5" /><rect x="12" y="0" width="3" height="10" rx="0.5" /></g></svg>
+              {/* wifi */}
+              <svg width="15" height="10" viewBox="0 0 15 10"><path d="M7.5 8.5a1 1 0 110 2 1 1 0 010-2zM2.5 4.5a7 7 0 0110 0l-1.4 1.4a5 5 0 00-7.2 0L2.5 4.5zM0 2a10 10 0 0115 0l-1.4 1.4a8 8 0 00-12.2 0L0 2z" fill={TOKENS.text} /></svg>
+              {/* battery */}
+              <svg width="24" height="11" viewBox="0 0 24 11"><rect x="0.5" y="0.5" width="20" height="10" rx="2.5" fill="none" stroke={TOKENS.text} strokeOpacity="0.4" /><rect x="2" y="2" width="16" height="7" rx="1.5" fill={TOKENS.text} /><rect x="21" y="3.5" width="1.5" height="4" rx="0.5" fill={TOKENS.text} opacity="0.4" /></svg>
+            </div>
+          </div>
+
+          {/* Content — booking card, full screen width */}
+          <div style={{
+            flex: 1, background: '#F4F6F8',
+            padding: '10px 14px 0',
+            position: 'relative',
+            overflow: 'hidden',
+          }}>
+          <div style={{
+            width: '100%', background: 'white', borderRadius: 16,
+            boxShadow: '0 6px 20px rgba(14,34,53,0.06), 0 1px 2px rgba(14,34,53,0.04)',
+            border: `1px solid ${TOKENS.line}`,
+            overflow: 'hidden',
+            position: 'relative',
+            paddingBottom: 72,
+            height: '100%',
+          }}>
+        {/* Perspective wrapper for flip */}
+        <div style={{ perspective: 1200, padding: '24px 24px 0' }}>
+          <div style={{
+            transformStyle: 'preserve-3d',
+            transition: 'transform 0.1s linear',
+            transform: `rotateY(${flipK * 180}deg)`,
+            position: 'relative',
+          }}>
+            {/* FRONT — Room selection */}
+            <div style={{
+              backfaceVisibility: 'hidden',
+              opacity: showDetails ? 0 : 1,
+            }}>
+              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12, letterSpacing: -0.3, color: TOKENS.text }}>New Booking</div>
+
+              {/* Search form */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {[
+                  { label: 'Check-in', value: 'Thu 14 Oct', start: 0.3 },
+                  { label: 'Check-out', value: 'Fri 15 Oct', start: 0.5 },
+                  { label: 'Category', value: 'All', start: 0.7 },
+                  { label: 'Number of guests', value: '1 adult', start: 0.9 },
+                ].map((f, i) => {
+                  const k = fill(f.start);
+                  return (
+                    <div key={i} style={{
+                      border: `1.5px solid ${TOKENS.line}`, borderRadius: 8, padding: '8px 12px',
+                      background: 'white',
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: TOKENS.text }}>{f.label}</div>
+                      <div style={{
+                        height: 10, borderRadius: 3, marginTop: 5,
+                        background: `linear-gradient(90deg, #E5E7EB ${k * 100}%, #F3F4F6 ${k * 100}%)`,
+                        width: k > 0 ? `${60 + i * 6}%` : '40%',
+                        transition: 'width 0.2s',
+                      }} />
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Search button */}
+              <div style={{
+                marginTop: 12, height: 42, borderRadius: 8,
+                background: '#1E6E3E', color: 'white',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontWeight: 700, fontSize: 14,
+                opacity: tween(t, 1.1, 1.4, 0, 1),
+                transform: `scale(${t > 1.55 && t < 1.75 ? 0.97 : 1})`,
+                transition: 'transform 0.1s',
+              }}>Search</div>
+
+              {/* Rooms list */}
+              <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {rooms.map((r, i) => {
+                  const appear = tween(t, 1.8 + i * 0.12, 2.1 + i * 0.12, 0, 1);
+                  const isSingle = i === 0;
+                  return (
+                    <div key={r.id} style={{
+                      opacity: appear,
+                      transform: `translateY(${(1 - appear) * 8}px)`,
+                    }}>
+                      {/* Room card */}
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: 12,
+                        padding: 10, borderRadius: 10,
+                        border: `1px solid ${TOKENS.line}`,
+                        background: 'white',
+                      }}>
+                        <img src={r.img} alt={r.name} style={{
+                          width: 76, height: 58, borderRadius: 8, flexShrink: 0,
+                          objectFit: 'cover', display: 'block',
+                        }} />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 700, fontSize: 14 }}>{r.name}</div>
+                          <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                            {[0, 1, 2].map(d => (
+                              <div key={d} style={{ height: 10, width: 28, background: '#EDEEF0', borderRadius: 3 }} />
+                            ))}
+                          </div>
+                          <div style={{ height: 5, background: '#EDEEF0', borderRadius: 3, width: '75%', marginTop: 6 }} />
+                        </div>
+                      </div>
+                      {/* "+" add → expanded detail (only for Single, first room) */}
+                      {isSingle && (
+                        <>
+                          <div style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            marginTop: 10,
+                          }}>
+                            <div style={{
+                              width: 32, height: 32, borderRadius: '50%',
+                              background: expandK > 0.5 ? '#1E6E3E' : '#0E2235',
+                              color: 'white',
+                              display: 'grid', placeItems: 'center',
+                              fontSize: 18, fontWeight: 600, lineHeight: 1,
+                              transform: `scale(${t > 2.55 && t < 2.75 ? 0.9 : 1})`,
+                              transition: 'background 0.2s, transform 0.12s',
+                            }}>{expandK > 0.5 ? '✓' : '+'}</div>
+                            <div style={{ textAlign: 'right' }}>
+                              <span style={{ fontSize: 16, fontWeight: 800, color: TOKENS.text }}>€148.00</span>
+                              <span style={{ fontSize: 12, color: TOKENS.mute, fontWeight: 500, marginLeft: 4 }}>/ night</span>
+                            </div>
+                          </div>
+                          {/* Room dropdown — appears after + */}
+                          <div style={{
+                            marginTop: 10,
+                            height: expandK * 48,
+                            opacity: expandK,
+                            overflow: 'hidden',
+                            transition: 'none',
+                          }}>
+                            <div style={{
+                              display: 'flex', alignItems: 'stretch',
+                              border: `1px solid ${TOKENS.line}`, borderRadius: 8,
+                              overflow: 'hidden',
+                            }}>
+                              <div style={{
+                                padding: '12px 14px', fontSize: 13, fontWeight: 600,
+                                background: '#F4F6F8', color: TOKENS.mute,
+                                borderRight: `1px solid ${TOKENS.line}`,
+                              }}>Room</div>
+                              <div style={{
+                                flex: 1, padding: '12px 14px', fontSize: 13,
+                                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                color: TOKENS.text, fontWeight: 600,
+                              }}>
+                                <span>Room 2 <span style={{ color: TOKENS.mute, fontWeight: 500 }}>(Cleaned)</span></span>
+                                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 4l4 4 4-4" stroke={TOKENS.mute} strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                              </div>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* BACK — Your Booking Details (review) */}
+            <div style={{
+              position: 'absolute', inset: 0,
+              backfaceVisibility: 'hidden',
+              transform: 'rotateY(180deg)',
+              opacity: showDetails ? 1 : 0,
+            }}>
+              <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 16, letterSpacing: -0.3, color: TOKENS.text }}>Your Booking Details</div>
+
+              {/* Top grid: check-in/out, nights, guests */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 14, columnGap: 24, marginBottom: 14 }}>
+                {[
+                  { label: 'Check-in',          w: 96 },
+                  { label: 'Check-out',         w: 96 },
+                  { label: 'Nights',            w: 28 },
+                  { label: 'Number of guests',  w: 28 },
+                ].map((f, i) => (
+                  <div key={i}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: TOKENS.mute }}>{f.label}</div>
+                    <div style={{
+                      height: 8, borderRadius: 3, marginTop: 6,
+                      background: '#E5E7EB', width: f.w,
+                    }} />
+                  </div>
+                ))}
+              </div>
+
+              {/* Total row */}
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '12px 0',
+                borderTop: `1px solid ${TOKENS.line}`,
+                borderBottom: `1px solid ${TOKENS.line}`,
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: TOKENS.mute }}>Total (EUR)</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: TOKENS.text }}>€148.00</div>
+              </div>
+
+              {/* Guest details section */}
+              <div style={{ fontSize: 16, fontWeight: 800, color: TOKENS.text, marginTop: 16, marginBottom: 10 }}>Guest Details</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                {[0, 1, 2, 3].map(i => (
+                  <div key={i} style={{
+                    height: 28, borderRadius: 6, background: '#EDEEF0',
+                  }} />
+                ))}
+              </div>
+              <div style={{
+                height: 84, borderRadius: 6, background: '#EDEEF0',
+                display: 'flex', flexDirection: 'column', justifyContent: 'center',
+                padding: '0 12px', gap: 6,
+              }}>
+                <div style={{ height: 6, background: '#DFE1E5', borderRadius: 3, width: '88%' }} />
+                <div style={{ height: 6, background: '#DFE1E5', borderRadius: 3, width: '72%' }} />
+                <div style={{ height: 6, background: '#DFE1E5', borderRadius: 3, width: '60%' }} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom sticky bar — Total + Next/Book */}
+        <div style={{
+          position: 'absolute', left: 0, right: 0, bottom: 0,
+          height: 64, borderTop: `1px solid ${TOKENS.line}`,
+          background: 'white',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '0 16px 0 20px',
+          transform: `translateY(${(1 - totalK) * 64}px)`,
+          opacity: totalK,
+        }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: TOKENS.mute, textTransform: 'uppercase', letterSpacing: 0.4 }}>Total (EUR)</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: TOKENS.text, marginTop: 2 }}>€148.00</div>
+          </div>
+          {!showDetails ? (
+            <div style={{
+              height: 44, padding: '0 28px', borderRadius: 8,
+              background: '#0E2235', color: 'white',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontWeight: 700, fontSize: 14,
+              transform: `scale(${nextPulse ? 0.96 : 1})`,
+              transition: 'transform 0.1s',
+            }}>Next →</div>
+          ) : (
+            <div style={{
+              height: 44, padding: '0 28px', borderRadius: 8,
+              background: booked ? TOKENS.green : '#1E6E3E',
+              color: 'white',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              fontWeight: 700, fontSize: 14,
+              transform: `scale(${bookPulse ? 0.96 : 1})`,
+              transition: 'background 0.25s, transform 0.1s',
+            }}>
+              {booked && <Icon name="check" size={14} color="white" strokeWidth={3} />}
+              {booked ? 'Booked!' : 'Book Now'}
+            </div>
+          )}
+        </div>
+          </div>
+          </div>
+
+          {/* Home indicator */}
+          <div style={{
+            position: 'absolute', bottom: 7, left: '50%', transform: 'translateX(-50%)',
+            width: 134, height: 5, borderRadius: 3, background: '#0B0F14',
+          }} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ────────────────────────────── Scene 2: Calendar arrival ──────────────────────────────
+const ROOM_TYPES_V = ['Single', 'Double', 'Queen', 'King', 'Deluxe', 'Twin'];
+const BAR_V = {
+  teal: { bg: TOKENS.teal, fg: 'white' },
+  tealSoft: { bg: TOKENS.tealSoft, fg: TOKENS.navy },
+  amber: { bg: TOKENS.amber, fg: TOKENS.navy },
+};
+
+const Scene2_CalendarArrival = () => {
+  const { localTime: t } = useSprite();
+  const barAppear = tween(t, 1.0, 1.8, 0, 1);
+  const toastIn = tween(t, 0.3, 0.9, 0, 1);
+  const toastOut = tween(t, 4.3, 5.3, 1, 0, Easing.easeInQuad);
+  const toastOpacity = Math.min(toastIn, toastOut);
+  const hiK = clampK(t, 1.0, 1.6) * (1 - clampK(t, 3.0, 3.8));
+
+  // Swap animation: around t=3.0-4.2s, drag "Ava M." (row 3, s:4) to row 4's empty slot at s:5-6, and move "James Brook" (row 4) down a day.
+  // Demonstrates the calendar is a live working tool.
+  const swapK = clampK(t, 3.0, 4.0);
+  const swapEase = Easing.easeInOutCubic(swapK);
+
+  const rez = [
+    { row: 0, s: 1, l: 1, name: 'Emma Collins', c: 'tealSoft' },
+    { row: 1, s: 1, l: 1, name: 'James Campbell', c: 'tealSoft' },
+    { row: 1, s: 3, l: 2, name: 'Mason Brooks', c: 'teal' },
+    { row: 2, s: 5, l: 2, name: 'Ethan Cooper', c: 'amber' },
+    { row: 3, s: 3, l: 1, name: 'Jason B.', c: 'teal' },
+    { row: 4, s: 1, l: 2, name: 'James Brook', c: 'tealSoft' },
+    { row: 5, s: 1, l: 1, name: 'Paul Wild', c: 'tealSoft' },
+    { row: 5, s: 3, l: 3, name: 'Anna Paul', c: 'teal' },
+  ];
+  const dayW = 100, rowH = 72, labelW = 140;
+  // Today = THU (idx 3). Give it a strong green highlight on every row.
+  // Weekends (SAT=5, SUN=6) get a soft blue tint.
+  const dayBg = (i) => {
+    if (i === 3) return 'rgba(31,191,122,0.14)';
+    if (i === 5 || i === 6) return '#EEF4FA';
+    return 'transparent';
+  };
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: '#FFFFFF', display: 'flex' }}>
+      <SidebarReal active="calendar" />
+      <div style={{ flex: 1, padding: '24px 28px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        <h1 style={{ fontSize: 28, fontWeight: 800, margin: '0 0 18px' }}>Calendar</h1>
+
+        {/* Header row — column tints extend up */}
+        <div style={{ display: 'flex', borderBottom: `1px solid ${TOKENS.line}`, paddingBottom: 8, marginBottom: 0 }}>
+          <div style={{ width: labelW, fontSize: 11, fontWeight: 700, color: TOKENS.mute, letterSpacing: 0.6 }}>ALL ROOM TYPES</div>
+          {['MON 11','TUE 12','WED 13','THU 14','FRI 15','SAT 16','SUN 17','MON 18'].map((d, i) => {
+            const [dow, num] = d.split(' ');
+            const isThu = i === 3;
+            return (
+              <div key={d} style={{ width: dayW, textAlign: 'center', background: dayBg(i), padding: '6px 0 4px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: TOKENS.mute, letterSpacing: 0.5 }}>{dow}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: isThu ? TOKENS.green : TOKENS.text }}>{num} OCT</div>
+              </div>
+            );
+          })}
+        </div>
+
+        {ROOM_TYPES_V.map((r, ri) => (
+          <div key={r} style={{
+            display: 'flex', height: rowH, borderBottom: `1px solid ${TOKENS.line}`, position: 'relative',
+          }}>
+            <div style={{ width: labelW, display: 'flex', alignItems: 'center', fontWeight: 600, fontSize: 13, background: ri === 0 ? `rgba(248,124,86,${0.10 * hiK})` : 'transparent' }}>{r} room</div>
+            {Array.from({ length: 8 }, (_, i) => (
+              <div key={i} style={{
+                width: dayW, borderLeft: `1px solid ${TOKENS.line}`,
+                background: dayBg(i),
+              }} />
+            ))}
+            {rez.filter(x => x.row === ri).map((x, i) => {
+              const bar = BAR_V[x.c];
+              return (
+                <div key={i} style={{
+                  position: 'absolute', left: labelW + x.s * dayW + 4, top: 12,
+                  width: x.l * dayW - 8, height: rowH - 24,
+                  background: bar.bg, color: bar.fg, borderRadius: 5,
+                  display: 'flex', alignItems: 'center', padding: '0 8px',
+                  fontWeight: 600, fontSize: 12, overflow: 'hidden', whiteSpace: 'nowrap',
+                }}>{x.name}</div>
+              );
+            })}
+            {/* Noah Adams — lands on Single row 0 Thu col 3, then drags down to Double row 1 Thu col 3 */}
+            {ri === 0 && barAppear > 0 && (() => {
+              const dy = rowH * swapEase;
+              const lifted = swapK > 0.05 && swapK < 0.95;
+              const lift = Math.sin(swapK * Math.PI) * 4;
+              return (
+                <div style={{
+                  position: 'absolute', left: labelW + 3 * dayW + 4, top: 12,
+                  width: dayW - 8, height: rowH - 24,
+                  background: TOKENS.teal, color: 'white', borderRadius: 5,
+                  display: 'flex', alignItems: 'center', padding: '0 8px',
+                  fontWeight: 700, fontSize: 12, overflow: 'hidden', whiteSpace: 'nowrap',
+                  transform: `translate(0, ${2 * rowH * swapEase - lift}px) scale(${swapK === 0 ? (0.7 + 0.3 * barAppear) : (lifted ? 1.04 : 1)})`,
+                  opacity: barAppear,
+                  boxShadow: lifted
+                    ? '0 10px 24px rgba(14,34,53,0.30), 0 0 0 2px rgba(255,255,255,0.85)'
+                    : `0 0 0 ${3 * hiK}px #F87C56`,
+                  zIndex: lifted ? 20 : 2,
+                  transition: 'box-shadow 0.15s',
+                }}>Noah Adams</div>
+              );
+            })()}
+          </div>
+        ))}
+
+        {/* (legacy block removed) */}
+      </div>
+
+      <div style={{
+        position: 'absolute', top: 28, right: 32, width: 320,
+        background: 'white', borderRadius: 10, padding: 14,
+        boxShadow: '0 12px 36px rgba(14,34,53,0.15)',
+        borderLeft: `4px solid ${TOKENS.green}`,
+        opacity: toastOpacity,
+        transform: `translateX(${30 * (1 - toastOpacity)}px)`,
+        display: 'flex', gap: 12, alignItems: 'flex-start',
+      }}>
+        <div style={{ width: 30, height: 30, borderRadius: '50%', background: TOKENS.greenSoft, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+          <Icon name="check" size={16} color={TOKENS.green} strokeWidth={3} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>New booking — Sunset Hotel</div>
+          <div style={{ fontSize: 12, color: TOKENS.mute, marginTop: 2 }}>Noah Adams · Single · 1 night · €148</div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ────────────────────────────── Scene 3: Fan-out ──────────────────────────────
+const Packet = ({ from, to, t, delay, color, label }) => {
+  const local = clampK(t, delay, delay + 1.2);
+  if (local <= 0 || local >= 1) return null;
+  const eased = Easing.easeInOutCubic(local);
+  const x = from.x + (to.x - from.x) * eased;
+  const y = from.y + (to.y - from.y) * eased;
+  const opacity = local < 0.1 ? local / 0.1 : local > 0.9 ? (1 - local) / 0.1 : 1;
+  return (
+    <div style={{
+      position: 'absolute', left: x, top: y,
+      width: 28, height: 28, borderRadius: '50%',
+      background: color, color: 'white',
+      display: 'grid', placeItems: 'center',
+      fontSize: 13, fontWeight: 700,
+      boxShadow: `0 4px 20px ${color}88`,
+      opacity, transform: 'translate(-50%, -50%)',
+    }}>{label}</div>
+  );
+};
+
+const Scene3_Fanout = () => {
+  const { localTime: t } = useSprite();
+  const hub = { x: STAGE_W / 2, y: STAGE_H / 2 + 20 };
+  const channelList = ['booking', 'expedia', 'airbnb', 'agoda', 'hostelworld', 'myallocator', 'siteminder'];
+  const N = channelList.length;
+  const channels = channelList.map((id, i) => ({
+    id,
+    angle: -90 + i * (360 / N),
+  }));
+  const R = 310;
+  const nodePos = (angle) => ({
+    x: hub.x + Math.cos(angle * Math.PI / 180) * R,
+    y: hub.y + Math.sin(angle * Math.PI / 180) * R,
+  });
+  const confirmAt = {};
+  channelList.forEach((id, i) => { confirmAt[id] = 1.3 + i * 0.22; });
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, overflow: 'hidden',
+      background: `
+        radial-gradient(ellipse at 50% 52%, rgba(248,124,86,0.06) 0%, rgba(248,124,86,0) 40%),
+        #FAF7F2
+      `,
+    }}>
+      {/* Subtle concentric rings behind the hub */}
+      <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+        {[110, 190, 270].map((r, i) => (
+          <circle key={i} cx={hub.x} cy={hub.y} r={r}
+            fill="none" stroke="#E5DFD3" strokeWidth="1" strokeDasharray="2 4"
+            opacity={0.6 - i * 0.12} />
+        ))}
+        {/* Curved connectors */}
+        {channels.map((c, i) => {
+          const p = nodePos(c.angle);
+          const reveal = clampK(t, 0.2 + i * 0.06, 0.7 + i * 0.06);
+          const confirmed = t > confirmAt[c.id];
+          // Control point: midpoint pulled slightly toward a perpendicular offset for a gentle arc
+          const mx = (hub.x + p.x) / 2;
+          const my = (hub.y + p.y) / 2;
+          const dx = p.x - hub.x, dy = p.y - hub.y;
+          const len = Math.hypot(dx, dy);
+          const nx = -dy / len, ny = dx / len;
+          const bow = 22;
+          const cx = mx + nx * bow;
+          const cy = my + ny * bow;
+          const path = `M ${hub.x} ${hub.y} Q ${cx} ${cy} ${p.x} ${p.y}`;
+          return (
+            <g key={i}>
+              <path d={path}
+                stroke={confirmed ? 'rgba(22,140,92,0.35)' : '#D8D1C4'}
+                strokeWidth={confirmed ? 2 : 1.5}
+                fill="none"
+                strokeLinecap="round"
+                pathLength="1"
+                strokeDasharray="1"
+                strokeDashoffset={1 - reveal}
+                style={{ transition: 'stroke 0.4s, stroke-width 0.4s' }}
+              />
+            </g>
+          );
+        })}
+      </svg>
+
+      {/* Hub */}
+      <div style={{
+        position: 'absolute', left: hub.x, top: hub.y,
+        transform: 'translate(-50%, -50%)',
+        width: 168, height: 168, borderRadius: 28,
+        background: 'linear-gradient(160deg, #122A42 0%, #0A1A2B 100%)',
+        color: 'white',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10,
+        boxShadow: '0 24px 60px rgba(14,34,53,0.25), 0 0 0 1px rgba(255,255,255,0.04) inset',
+      }}>
+        <div style={{ transform: `scale(${1 + 0.05 * Math.sin(t * 3.2)})`, transition: 'transform 0.08s' }}>
+          <SirvoySymbol size={62} radius={14} />
+        </div>
+        <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1.4, textTransform: 'uppercase', opacity: 0.92 }}>Sirvoy</div>
+      </div>
+
+      {/* Channel cards */}
+      {channels.map(c => {
+        const p = nodePos(c.angle);
+        const confirmed = t > confirmAt[c.id];
+        const pulseK = clampK(t - confirmAt[c.id], 0, 0.2) * (1 - clampK(t - confirmAt[c.id], 0.2, 0.8));
+        const enter = clampK(t, 0.1, 0.7);
+        return (
+          <div key={c.id} style={{
+            position: 'absolute', left: p.x, top: p.y,
+            transform: `translate(-50%, -50%) translateY(${(1 - enter) * 8}px)`,
+            opacity: enter,
+            width: 200,
+            background: 'white',
+            borderRadius: 14,
+            padding: '20px 18px 16px',
+            boxShadow: confirmed
+              ? `0 12px 28px rgba(14,34,53,0.10), 0 0 0 ${3 * pulseK}px rgba(22,140,92,0.20)`
+              : '0 6px 18px rgba(14,34,53,0.08)',
+            borderLeft: `3px solid ${confirmed ? TOKENS.green : '#E5DFD3'}`,
+            transition: 'border-color 0.3s, box-shadow 0.3s',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+          }}>
+            <div style={{ height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <ChLogo id={c.id} height={42} />
+            </div>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '5px 10px',
+              borderRadius: 999,
+              background: confirmed ? 'rgba(22,140,92,0.10)' : 'rgba(14,34,53,0.05)',
+              transition: 'background 0.3s',
+            }}>
+              {confirmed ? (
+                <>
+                  <span style={{ width: 14, height: 14, borderRadius: '50%', background: TOKENS.green, display: 'grid', placeItems: 'center' }}>
+                    <Icon name="check" size={9} color="white" strokeWidth={3.5} />
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#106A3E' }}>Updated</span>
+                </>
+              ) : (
+                <>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: TOKENS.amber, animation: 'pulseDot 1s infinite' }} />
+                  <span style={{ fontSize: 11, fontWeight: 700, color: TOKENS.mute }}>Syncing…</span>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Flying packets */}
+      {channels.map((c, i) => (
+        <Packet key={c.id} from={hub} to={nodePos(c.angle)} t={t} delay={0.3 + i * 0.18} color="#F87C56" label="↗" />
+      ))}
+    </div>
+  );
+};
+
+// ────────────────────────────── Scene 4: Done ──────────────────────────────
+const Scene4_Done = () => {
+  const { localTime: t } = useSprite();
+  const bgFade = tween(t, 0, 0.4, 0, 1);
+  const lockupIn = tween(t, 0.3, 1.0, 0, 1, Easing.easeOutCubic);
+  const line1In = tween(t, 0.9, 1.5, 0, 1, Easing.easeOutCubic);
+  const line2In = tween(t, 1.2, 1.8, 0, 1, Easing.easeOutCubic);
+  const accentIn = tween(t, 1.6, 2.2, 0, 1, Easing.easeOutCubic);
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0,
+      background: 'radial-gradient(ellipse at 50% 40%, #1A3350 0%, #0E2235 60%, #08162A 100%)',
+      opacity: bgFade,
+      overflow: 'hidden',
+    }}>
+      {/* Soft orange glow behind */}
+      <div style={{
+        position: 'absolute', left: '50%', top: '62%',
+        width: 900, height: 900,
+        transform: 'translate(-50%, -50%)',
+        background: 'radial-gradient(circle, rgba(248,124,86,0.18) 0%, rgba(248,124,86,0) 60%)',
+        opacity: accentIn,
+        pointerEvents: 'none',
+      }} />
+
+      {/* Sirvoy logo — real brand lockup */}
+      <div style={{
+        position: 'absolute', top: 110, left: '50%',
+        transform: `translate(-50%, ${(1 - lockupIn) * -16}px)`,
+        opacity: lockupIn,
+      }}>
+        <img src="channels/sirvoy-logo-white.svg" alt="Sirvoy" style={{ display: 'block', width: 440, height: 'auto' }} />
+      </div>
+
+      {/* Hero copy — centered, two lines with mixed emphasis */}
+      <div style={{
+        position: 'absolute', left: 0, right: 0, top: '50%',
+        transform: 'translateY(-50%)',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        marginTop: 30,
+      }}>
+        <div style={{
+          color: 'white',
+          fontSize: 96, fontWeight: 300, letterSpacing: -3,
+          lineHeight: 1.0,
+          fontFamily: "'Inter', system-ui, sans-serif",
+          opacity: line1In,
+          transform: `translateY(${(1 - line1In) * 24}px)`,
+        }}>
+          Work <em style={{ fontStyle: 'italic', fontWeight: 500, color: 'rgba(255,255,255,0.92)' }}>smarter.</em>
+        </div>
+        <div style={{
+          color: '#F87C56',
+          fontSize: 128, fontWeight: 800, letterSpacing: -4.5,
+          lineHeight: 1.0, marginTop: 18,
+          fontFamily: "'Inter', system-ui, sans-serif",
+          opacity: line2In,
+          transform: `translateY(${(1 - line2In) * 24}px)`,
+        }}>
+          Earn more.
+        </div>
+
+        {/* Underline accent */}
+        <div style={{
+          marginTop: 42,
+          height: 4, borderRadius: 2,
+          background: '#F87C56',
+          width: `${accentIn * 120}px`,
+          opacity: accentIn,
+        }} />
+      </div>
+
+      {/* URL / footer */}
+      <div style={{
+        position: 'absolute', left: 0, right: 0, bottom: 72,
+        textAlign: 'center',
+        color: 'rgba(255,255,255,0.55)',
+        fontSize: 20, fontWeight: 500, letterSpacing: 0.4,
+        opacity: accentIn,
+      }}>
+        sirvoy.com
+      </div>
+    </div>
+  );
+};
+
+// ────────────────────────────── Scene caption (bottom) ──────────────────────────────
+// Quiet, cinematic step label — number + text, fades in at scene start, out at end.
+// Replaces the old full-width progress bar which was cluttering the frame.
+const SceneCaption = () => {
+  const t = useTime();
+  const steps = [
+    { n: 1, label: 'Guest books a room',                start: 0.3,  end: 6.7  },
+  ];
+  return (
+    <>
+      {steps.map((s, i) => {
+        const fadeIn  = clampK(t, s.start, s.start + 0.5);
+        const fadeOut = 1 - clampK(t, s.end, s.end + 0.5);
+        const op = Math.min(fadeIn, fadeOut);
+        if (op <= 0) return null;
+        return (
+          <div key={i} style={{
+            position: 'absolute', left: '50%', bottom: 28,
+            transform: `translate(-50%, ${(1 - fadeIn) * 6}px)`,
+            display: 'flex', alignItems: 'center', gap: 12,
+            padding: '10px 18px 10px 12px',
+            background: 'rgba(14,34,53,0.78)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: 999,
+            opacity: op, zIndex: 50, pointerEvents: 'none',
+          }}>
+            <div style={{
+              width: 26, height: 26, borderRadius: '50%',
+              background: '#F87C56', color: 'white',
+              display: 'grid', placeItems: 'center',
+              fontSize: 12, fontWeight: 800,
+            }}>{s.n}</div>
+            <div style={{ color: 'white', fontSize: 14, fontWeight: 600, letterSpacing: 0.1 }}>
+              {s.label}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+};
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "singleImg": "",
+  "doubleImg": "",
+  "queenImg": "",
+  "bgMode": "green"
+}/*EDITMODE-END*/;
+
+// Custom file input — converts to a data URL so the tweak persists across reloads.
+function RoomImageTweak({ label, value, onChange }) {
+  const inputRef = React.useRef(null);
+  const onFile = (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => onChange(String(reader.result));
+    reader.readAsDataURL(f);
+  };
+  return (
+    <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(14,34,53,0.08)' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#0E2235', letterSpacing: 0.2, marginBottom: 6 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{
+          width: 52, height: 40, borderRadius: 6,
+          background: value ? `url(${value}) center/cover` : '#F0F2F5',
+          border: '1px solid rgba(14,34,53,0.12)',
+          flexShrink: 0,
+        }} />
+        <button
+          onClick={() => inputRef.current && inputRef.current.click()}
+          style={{
+            flex: 1, height: 28, borderRadius: 6, border: '1px solid rgba(14,34,53,0.15)',
+            background: 'white', fontSize: 11, fontWeight: 600, color: '#0E2235', cursor: 'pointer',
+          }}>{value ? 'Replace' : 'Upload'}</button>
+        {value && (
+          <button onClick={() => onChange('')} style={{
+            height: 28, padding: '0 8px', borderRadius: 6, border: '1px solid rgba(14,34,53,0.15)',
+            background: 'white', fontSize: 11, fontWeight: 600, color: '#8A2828', cursor: 'pointer',
+          }}>Reset</button>
+        )}
+        <input ref={inputRef} type="file" accept="image/*" onChange={onFile} style={{ display: 'none' }} />
+      </div>
+    </div>
+  );
+}
+
+// Record the screen via getDisplayMedia + MediaRecorder.
+// Downscales/crops to exactly 1080x1080 via an offscreen canvas so the
+// downloaded file is always 1080x1080 regardless of the source tab size.
+async function recordVideo(durationSec = 22) {
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 30 },
+      audio: false,
+    });
+
+    // Create a video element we can read frames from
+    const srcVideo = document.createElement('video');
+    srcVideo.srcObject = stream;
+    srcVideo.muted = true;
+    await srcVideo.play();
+    await new Promise(r => srcVideo.onloadedmetadata = r);
+
+    // Offscreen canvas at exactly 1080x1080
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080;
+    canvas.height = 1080;
+    const ctx = canvas.getContext('2d');
+
+    // Draw loop: letterbox/cover the source into 1080x1080
+    let running = true;
+    const drawLoop = () => {
+      if (!running) return;
+      const sw = srcVideo.videoWidth;
+      const sh = srcVideo.videoHeight;
+      if (sw && sh) {
+        // Cover: fill the 1080x1080 square, cropping overflow
+        const scale = Math.max(1080 / sw, 1080 / sh);
+        const dw = sw * scale;
+        const dh = sh * scale;
+        const dx = (1080 - dw) / 2;
+        const dy = (1080 - dh) / 2;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, 1080, 1080);
+        ctx.drawImage(srcVideo, dx, dy, dw, dh);
+      }
+      requestAnimationFrame(drawLoop);
+    };
+    drawLoop();
+
+    // Record the canvas stream
+    const canvasStream = canvas.captureStream(30);
+    const mimeCandidates = [
+      'video/mp4;codecs=avc1.42E01E',
+      'video/mp4',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+    ];
+    const mimeType = mimeCandidates.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+    const isMp4 = mimeType.startsWith('video/mp4');
+    const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: 12_000_000 });
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise((resolve) => recorder.onstop = resolve);
+    recorder.start();
+
+    setTimeout(() => {
+      recorder.stop();
+      running = false;
+      stream.getTracks().forEach(t => t.stop());
+      canvasStream.getTracks().forEach(t => t.stop());
+    }, durationSec * 1000 + 200);
+
+    await stopped;
+    const blob = new Blob(chunks, { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = isMp4 ? 'sirvoy-hero.mp4' : 'sirvoy-hero.webm';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (err) {
+    alert('Recording failed or was cancelled.\n\n' + (err && err.message || err));
+  }
+}
+
+function App() {
+  const [tw, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const roomImages = {
+    single: tw.singleImg,
+    double: tw.doubleImg,
+    queen:  tw.queenImg,
+  };
+  const bg = tw.bgMode === 'green' ? '#00FF00'
+           : tw.bgMode === 'cream' ? '#FAF7F2'
+           : tw.bgMode === 'navy'  ? '#0E2235'
+           : 'transparent';
+  return (
+    <TweaksContext.Provider value={roomImages}>
+      <Stage width={STAGE_W} height={STAGE_H} duration={11} background={bg}>
+        <Sprite start={0} end={7}><Scene1_Booking /></Sprite>
+        <Sprite start={7} end={11}><Scene4_Done /></Sprite>
+        <SceneCaption />
+      </Stage>
+      <TweaksPanel title="Hero video">
+        <TweakSection label="Export" />
+        <div style={{ padding: '10px 12px', fontSize: 11, color: '#5A6370', lineHeight: 1.4 }}>
+          Click below, pick this browser tab when prompted. Output is always 1080×1080 (covers to fit).<br/>
+          Chrome downloads MP4 directly; Safari/Firefox produce .webm (rename to .mp4 or convert).
+        </div>
+        <div style={{ padding: '0 12px 12px' }}>
+          <button
+            onClick={() => recordVideo(11)}
+            style={{
+              width: '100%', height: 34, borderRadius: 6,
+              background: '#0E2235', color: 'white', border: 'none',
+              fontWeight: 700, fontSize: 12, cursor: 'pointer',
+            }}>Record &amp; Download (11s)</button>
+        </div>
+        <TweakSection label="Export background" />
+        <TweakRadio label="Background" value={tw.bgMode}
+                    options={['green', 'cream', 'navy', 'none']}
+                    onChange={(v) => setTweak('bgMode', v)} />
+        <TweakSection label="Room photos" />
+        <RoomImageTweak label="Single room" value={tw.singleImg} onChange={(v) => setTweak('singleImg', v)} />
+        <RoomImageTweak label="Double room" value={tw.doubleImg} onChange={(v) => setTweak('doubleImg', v)} />
+        <RoomImageTweak label="Queen room"  value={tw.queenImg}  onChange={(v) => setTweak('queenImg', v)} />
+      </TweaksPanel>
+    </TweaksContext.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

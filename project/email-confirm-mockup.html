@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Email confirmation — ending mockup</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0E2235;
+    --bg-2: #16304A;
+    --text: #0E2235;
+    --mute: #6A7A8C;
+    --line: #E4EBF2;
+    --green: #1E6E3E;
+    --green-accent: #1FBF7A;
+    --green-soft: #DBF5E9;
+    --orange: #F87C56;
+    --card: #FFFFFF;
+  }
+  html, body { margin: 0; padding: 0; height: 100%; background: #050B14; font-family: Inter, system-ui, sans-serif; color: var(--text); }
+  * { box-sizing: border-box; }
+
+  /* 1080×1080 stage, scaled to fit viewport */
+  .stage-wrap { position: fixed; inset: 0; display: grid; place-items: center; }
+  .stage {
+    width: 1080px; height: 1080px;
+    position: relative;
+    background: radial-gradient(ellipse at 50% 30%, #1B3656 0%, #0E2235 55%, #050B14 100%);
+    overflow: hidden;
+    border-radius: 0;
+  }
+
+  /* Behind: faint, blurred dashboard hint with a soft vignette */
+  .bg-hint {
+    position: absolute; inset: 0;
+    opacity: 0.18;
+    filter: blur(14px) saturate(0.7);
+  }
+  .bg-hint .row {
+    position: absolute; left: 80px; right: 80px;
+    height: 56px; border-radius: 12px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.04);
+  }
+  .bg-hint .row.r1 { top: 200px; }
+  .bg-hint .row.r2 { top: 280px; opacity: 0.7; }
+  .bg-hint .row.r3 { top: 360px; opacity: 0.4; }
+  .bg-hint .sb {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 280px;
+    background: rgba(255,255,255,0.04);
+    border-right: 1px solid rgba(255,255,255,0.06);
+  }
+
+  /* Confetti / sparkles */
+  .sparkle {
+    position: absolute;
+    width: 8px; height: 8px;
+    background: var(--green-accent);
+    border-radius: 50%;
+    box-shadow: 0 0 18px var(--green-accent);
+  }
+  .sparkle.s2 { background: #FFD66B; box-shadow: 0 0 18px #FFD66B; width: 6px; height: 6px; }
+  .sparkle.s3 { background: var(--orange); box-shadow: 0 0 18px var(--orange); width: 5px; height: 5px; }
+  .sparkle.s4 { background: #6BD2FF; box-shadow: 0 0 18px #6BD2FF; width: 7px; height: 7px; }
+
+  /* Trail of envelope (motion line) */
+  .trail {
+    position: absolute;
+    top: 540px;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    pointer-events: none;
+  }
+  .trail::after {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: 8%;
+    width: 36%;
+    height: 4px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, transparent 0%, rgba(31,191,122,0) 0%, rgba(31,191,122,0.45) 60%, rgba(255,255,255,0.85) 100%);
+    filter: blur(0.5px);
+  }
+
+  /* Email card */
+  .email {
+    position: absolute;
+    width: 720px;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%) rotate(-1.2deg);
+    background: white;
+    border-radius: 22px;
+    box-shadow:
+      0 60px 120px rgba(0,0,0,0.55),
+      0 18px 40px rgba(0,0,0,0.35),
+      0 0 0 1px rgba(255,255,255,0.08);
+    overflow: hidden;
+  }
+
+  .email-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 18px;
+    background: #F4F6F8;
+    border-bottom: 1px solid var(--line);
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.r { background: #FF6058; }
+  .dot.y { background: #FFC130; }
+  .dot.g { background: #28C940; }
+  .email-bar .addr {
+    margin-left: 10px;
+    font-size: 13px; color: var(--mute);
+    font-family: ui-monospace, SF Mono, monospace;
+  }
+
+  .email-head {
+    padding: 28px 36px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .from-row {
+    display: flex; align-items: center; gap: 14px;
+    margin-bottom: 10px;
+  }
+  .avatar {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: linear-gradient(135deg, #1E6E3E, #1FBF7A);
+    color: white;
+    display: grid; place-items: center;
+    font-weight: 800; font-size: 18px;
+    letter-spacing: -0.3px;
+  }
+  .from {
+    display: flex; flex-direction: column;
+  }
+  .from .name { font-weight: 700; font-size: 16px; color: var(--text); letter-spacing: -0.2px; }
+  .from .em { font-size: 13px; color: var(--mute); }
+  .to-row {
+    font-size: 13px; color: var(--mute);
+    margin-left: 58px;
+  }
+  .to-row b { color: var(--text); font-weight: 600; }
+  .subject {
+    font-size: 26px; font-weight: 800; color: var(--text);
+    letter-spacing: -0.6px;
+    margin-top: 18px;
+    line-height: 1.2;
+  }
+
+  .hero {
+    padding: 36px 36px 0;
+  }
+  .hero .greet {
+    font-size: 17px; color: var(--text); font-weight: 500;
+    margin-bottom: 18px;
+  }
+  .hero .body {
+    font-size: 15px; color: var(--mute);
+    line-height: 1.55;
+    margin-bottom: 24px;
+  }
+
+  .conf {
+    margin: 0 36px;
+    padding: 24px 28px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, #F7FBF8, #EDF7F1);
+    border: 1px solid #D1EAD9;
+    position: relative;
+  }
+  .conf .label {
+    font-size: 11px; font-weight: 700; color: var(--green); letter-spacing: 1.4px;
+    text-transform: uppercase;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .conf .label svg { width: 14px; height: 14px; }
+  .conf .num {
+    font-size: 30px; font-weight: 800; color: var(--text);
+    letter-spacing: -0.6px;
+    margin-top: 8px; margin-bottom: 18px;
+    font-family: ui-monospace, SF Mono, monospace;
+  }
+  .grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 18px 28px;
+  }
+  .grid .k { font-size: 11px; color: var(--mute); text-transform: uppercase; letter-spacing: 1px; font-weight: 700; }
+  .grid .v { font-size: 16px; color: var(--text); font-weight: 600; margin-top: 4px; letter-spacing: -0.2px; }
+
+  .cta-row {
+    padding: 28px 36px 32px;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 8px;
+  }
+  .cta {
+    background: var(--text);
+    color: white;
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-weight: 700; font-size: 14px;
+    letter-spacing: -0.1px;
+  }
+  .total {
+    font-size: 13px; color: var(--mute); font-weight: 500;
+  }
+  .total b { color: var(--text); font-weight: 800; font-size: 22px; letter-spacing: -0.4px; margin-left: 4px; }
+
+  /* "Sent" badge floating top-right of email */
+  .sent-badge {
+    position: absolute;
+    top: -22px; right: -22px;
+    background: var(--green-accent);
+    color: white;
+    padding: 12px 22px 12px 18px;
+    border-radius: 999px;
+    font-size: 14px; font-weight: 700; letter-spacing: -0.1px;
+    display: flex; align-items: center; gap: 10px;
+    box-shadow: 0 16px 40px rgba(31,191,122,0.45), 0 0 0 6px rgba(31,191,122,0.18);
+    transform: rotate(8deg);
+  }
+  .sent-badge svg { width: 18px; height: 18px; }
+
+  /* Caption beneath */
+  .caption {
+    position: absolute;
+    bottom: 80px; left: 0; right: 0;
+    text-align: center;
+    color: rgba(255,255,255,0.86);
+    font-weight: 600; font-size: 26px;
+    letter-spacing: -0.4px;
+  }
+  .caption b { color: white; }
+  .caption small {
+    display: block;
+    font-size: 16px; color: rgba(255,255,255,0.55);
+    font-weight: 500;
+    margin-top: 6px;
+    letter-spacing: 0;
+  }
+</style>
+</head>
+<body>
+<div class="stage-wrap">
+  <div class="stage" id="stage">
+
+    <div class="bg-hint">
+      <div class="sb"></div>
+      <div class="row r1"></div>
+      <div class="row r2"></div>
+      <div class="row r3"></div>
+    </div>
+
+    <!-- sparkles -->
+    <div class="sparkle"     style="left: 220px; top: 290px;"></div>
+    <div class="sparkle s2"  style="left: 880px; top: 230px;"></div>
+    <div class="sparkle s3"  style="left: 200px; top: 760px;"></div>
+    <div class="sparkle s4"  style="left: 870px; top: 790px;"></div>
+    <div class="sparkle"     style="left: 140px; top: 540px;"></div>
+    <div class="sparkle s2"  style="left: 940px; top: 540px;"></div>
+    <div class="sparkle s3"  style="left: 300px; top: 200px;"></div>
+    <div class="sparkle s4"  style="left: 800px; top: 870px;"></div>
+
+    <div class="trail"></div>
+
+    <div class="email">
+      <div class="email-bar">
+        <span class="dot r"></span>
+        <span class="dot y"></span>
+        <span class="dot g"></span>
+        <span class="addr">mail.app · Inbox</span>
+      </div>
+
+      <div class="email-head">
+        <div class="from-row">
+          <div class="avatar">SH</div>
+          <div class="from">
+            <span class="name">Sirvoy Hotel · Reservations</span>
+            <span class="em">no-reply@sirvoyhotel.com</span>
+          </div>
+        </div>
+        <div class="to-row">to <b>noah.adams@gmail.com</b> · 2 sec ago</div>
+        <div class="subject">Your reservation is confirmed ✓</div>
+      </div>
+
+      <div class="hero">
+        <div class="greet">Hi Noah,</div>
+        <div class="body">Thanks for booking with Sirvoy Hotel. We're looking forward to having you. Your reservation details are below — see you soon.</div>
+      </div>
+
+      <div class="conf">
+        <div class="label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>
+          Booking confirmed
+        </div>
+        <div class="num">#26142</div>
+        <div class="grid">
+          <div>
+            <div class="k">Check-in</div>
+            <div class="v">Thu 14 Oct, 3:00 PM</div>
+          </div>
+          <div>
+            <div class="k">Check-out</div>
+            <div class="v">Fri 15 Oct, 11:00 AM</div>
+          </div>
+          <div>
+            <div class="k">Room</div>
+            <div class="v">Single room · 1 adult</div>
+          </div>
+          <div>
+            <div class="k">Nights</div>
+            <div class="v">1 night</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="cta-row">
+        <div class="total">Total <b>€148.00</b></div>
+        <div class="cta">Manage booking →</div>
+      </div>
+
+      <div class="sent-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>
+        Sent
+      </div>
+    </div>
+
+    <div class="caption">
+      <b>Confirmation sent</b> to the guest in <b>2 seconds</b>.
+      <small>Automatic. Branded. Right after Save.</small>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Scale 1080×1080 stage to fit viewport
+  function fit() {
+    const stage = document.getElementById('stage');
+    const w = window.innerWidth, h = window.innerHeight;
+    const s = Math.min(w / 1080, h / 1080);
+    stage.style.transform = `scale(${s})`;
+    stage.style.transformOrigin = 'center center';
+  }
+  window.addEventListener('resize', fit);
+  fit();
+</script>
+</body>
+</html>
