@@ -533,8 +533,8 @@ const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
   // Form
   const fillStart = [0.4, 0.7, 1.0, 1.3];
   const fields = [
-    { label: 'Check-in',         w: '70%' },
-    { label: 'Check-out',        w: '70%' },
+    { label: 'Check-in',         w: '70%', typed: '14 Oct 2026' },
+    { label: 'Check-out',        w: '70%', typed: '15 Oct 2026' },
     { label: 'Category',         w: '55%' },
     { label: 'Number of guests', w: '40%' },
   ];
@@ -577,6 +577,38 @@ const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           {fields.map((f, i) => {
             const k = clampK(t, fillStart[i], fillStart[i] + 0.3);
+            // Date-picker-style fields (Check-in / Check-out): the value
+            // POPS in all at once (as if a date picker just set it), with a
+            // brief green border flash to acknowledge the selection.
+            if (f.typed) {
+              const popAt = fillStart[i] + 0.05;       // when the value lands
+              const flashEnd = popAt + 0.35;            // how long the green flash holds
+              const filled = t >= popAt;
+              const flashing = t >= popAt && t < flashEnd;
+              const popK = clampK(t, popAt, popAt + 0.18); // 0→1 over ~180ms
+              return (
+                <div key={i} style={{
+                  border: `2px solid ${flashing ? C.green : C.line}`, borderRadius: 12,
+                  padding: '14px 18px',
+                  transition: 'border-color 0.25s',
+                }}>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: C.text, marginBottom: 6 }}>{f.label}</div>
+                  <div style={{
+                    height: 22,
+                    display: 'flex', alignItems: 'center',
+                    fontSize: 18, fontWeight: 500, color: C.text,
+                    fontVariantNumeric: 'tabular-nums',
+                    letterSpacing: -0.1,
+                  }}>
+                    <span style={{
+                      opacity: filled ? popK : 0,
+                      transform: `translateY(${(1 - popK) * 4}px)`,
+                      transition: 'opacity 0.12s, transform 0.12s',
+                    }}>{filled ? f.typed : ''}</span>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={i} style={{
                 border: `2px solid ${C.line}`, borderRadius: 12,
@@ -650,7 +682,7 @@ const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
                   <div style={{
                     borderRadius: 12,
                     background: isSingle && added ? '#FAFAFB' : 'white',
-                    border: `2px solid ${isSingle && added ? C.navy : C.line}`,
+                    border: `2px solid ${C.line}`,
                     boxShadow: isSingle && added ? '0 1px 0 rgba(14,34,53,0.04)' : 'none',
                     transition: 'border-color 0.4s, background 0.4s',
                     overflow: 'visible',
@@ -718,7 +750,7 @@ const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
                             color: roomPicked ? C.text : C.mute,
                             transform: `scale(${dropdownTapPulse ? 0.99 : 1})`,
                             transition: 'transform 0.1s',
-                            boxShadow: dropdownTapPulse ? `0 0 0 4px ${C.greenSoft}` : 'none',
+                            boxShadow: 'none',
                             position: 'relative',
                           }} data-cursor-target="step2-room-select">
                             <span>{roomPicked ? 'Room 1 (Cleaned)' : 'Choose room…'}</span>
@@ -744,16 +776,11 @@ const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
             {dropdownOpenK > 0.02 && (
               <div style={{
                 position: 'absolute',
-                // Column inner padding-left = 24, picker label width 60 + gap 16 = 76,
-                // plus row inner padding-left 14 \u2192 24+14+76 = 114 from panel left.
-                left: 114,
-                // panel-inner padding 20 + header (\u224852) + 14mb + Single card border 2 +
-                // main row 94 + picker border 1 + padding-top 12. Drop list opens
-                // aligned with the top of the select button (overlays it) so the
-                // options sit at the same vertical level as the "Choose room" row
-                // instead of floating down across the Double / Queen cards.
+                // Single card row: padding-left 14 + Room label minWidth 60 + gap 16 = 90.
+                // Right edge mirrors the row's right padding (14).
+                left: 90,
+                right: 14,
                 top: 20 + 52 + 14 + 2 + 94 + 1 + 12,
-                width: 540,
                 background: '#3D434B',
                 borderRadius: 10,
                 boxShadow: '0 12px 32px rgba(14,34,53,0.28)',
@@ -850,8 +877,8 @@ const Step3_PersonalData = ({ t, visible, savePulse }) => {
   const inK = clampK(t, 0.0, 0.4);
   // Fields fill in sequence
   const fields = [
-    { label: 'First name',  w: '60%', typed: 'Noah' },
-    { label: 'Last name',   w: '70%', typed: 'Adams' },
+    { label: 'First name',  w: '60%', typed: 'Noah',  typeStart: 0.40, typeWindow: 0.45 },
+    { label: 'Last name',   w: '70%', typed: 'Adams', typeStart: 0.95, typeWindow: 0.55 },
     { label: 'Email',       w: '85%' },
     { label: 'Phone',       w: '50%' },
     { label: 'Address',     w: '90%' },
@@ -876,8 +903,9 @@ const Step3_PersonalData = ({ t, visible, savePulse }) => {
             // Typed-text fields: type out char by char over the same fill window,
             // show a blinking caret while typing, then hold the full text.
             if (f.typed) {
-              const typeWindow = 0.55; // a bit longer than the bar fills
-              const tk = clampK(t, fillStart[i], fillStart[i] + typeWindow);
+              const typeStart  = f.typeStart  ?? fillStart[i];
+              const typeWindow = f.typeWindow ?? 0.55;
+              const tk = clampK(t, typeStart, typeStart + typeWindow);
               const charsShown = Math.floor(tk * f.typed.length + 0.0001);
               const shown = f.typed.slice(0, charsShown);
               const isTyping = tk > 0 && tk < 1;
