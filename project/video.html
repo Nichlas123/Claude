@@ -42,34 +42,40 @@
 const clampK = (t, start, end) => Math.max(0, Math.min(1, (t - start) / Math.max(0.0001, end - start)));
 const lerp = (a, b, k) => a + (b - a) * k;
 
-// Square 1080×1080 video frame with transparent background. The scene
-// content (booking flow) renders into a centered 670×920 portrait region
-// inside the 1080×1080 — leaving transparent margins on left, right, top,
-// and bottom so the asset can be composited on top of a hero background.
+// Video frame with transparent background. The scene content (booking flow)
+// renders into a centered portrait region inside the canvas — leaving small
+// transparent margins around it so the asset can be composited on top of a
+// hero background.
 //
-// The scene is authored in a 1080-wide design coord system that's been
-// extended vertically to 1080 × 1483 (preserves 670:920 aspect — i.e.
-// 1080 × (920/670) ≈ 1483). All existing layouts that were tuned against
-// SCENE = 1080 (square) live in the top 1080 of vertical design space;
-// SCENE_H = 1483 is the new vertical ceiling, used by anything that
-// needs to position relative to the bottom of the scene.
-// Visible scene content is capped at 668 wide; the surrounding STAGE is the
-// transparent canvas the exporter writes to. Height auto-grows from the
-// design aspect ratio so content isn't cropped.
-const SCENE_RENDERED_W = 668;
-const SCENE_RENDERED_H = 920;
+// The scene is authored in a 1080-wide design coord system. SCENE_RENDERED_W
+// controls how wide the scene paints inside the stage; the stage width
+// (STAGE_W) is the full transparent canvas the exporter writes to. The scene
+// is rendered at SCENE_RENDERED_W × SCENE_RENDERED_H (preserving 670:920
+// portrait aspect), and the stage auto-sizes around it.
+//
+// The horizontal padding has been minimized so that — when embedded at a
+// fixed width — the visible video appears as large as possible (and the
+// iframe naturally becomes taller, since the underlying scene is portrait).
+// Stage = the actual exported MP4 frame: 1080×1080 with a TRANSPARENT
+// background. The booking-flow scene is centered inside the stage at a
+// max width of 700px (per spec).
+//
+// To make the content read LARGER inside that fixed 700-wide region, the
+// design-coord system has been shrunk from 1080 → 800. SCENE_SCALE now
+// renders content at ~88% (vs the old 65%), so every authored fontSize /
+// padding / margin paints ~35% bigger in the output frame.
 const STAGE_W = 1080;
-// Stage height grows if needed to fit the (possibly taller) scene with the
-// same vertical margin (~80) above and below.
-const STAGE_H = Math.max(1080, SCENE_RENDERED_H + 160);
-const SCENE = 1080;       // legacy alias — design coord WIDTH (kept so existing math works)
-const SCENE_W = 1080;     // design coord width
-const SCENE_H = Math.round(SCENE_W * SCENE_RENDERED_H / SCENE_RENDERED_W); // 1483 — design coord height
-const SCENE_SCALE = SCENE_RENDERED_W / SCENE_W; // ≈ 0.620
-const INNER_OFFSET_X = (STAGE_W - SCENE_RENDERED_W) / 2; // 205
-const INNER_OFFSET_Y = (STAGE_H - SCENE_RENDERED_H) / 2; // 80
+const STAGE_H = 1080;
+const SCENE_W = 720;                                 // near-1:1 with rendered width — content renders at almost native size
+const SCENE_H = Math.round(SCENE_W * 1483 / 1080);   // preserve original portrait aspect
+const SCENE_RENDERED_W = 700;                        // visible scene width — locked at 700 (max spec)
+const SCENE_RENDERED_H = Math.round(SCENE_RENDERED_W * SCENE_H / SCENE_W);
+const SCENE_SCALE = SCENE_RENDERED_W / SCENE_W;      // 0.875 (was 0.648)
+const INNER_OFFSET_X = (STAGE_W - SCENE_RENDERED_W) / 2;
+const INNER_OFFSET_Y = Math.max(0, (STAGE_H - SCENE_RENDERED_H) / 2);
 const INNER_W = SCENE_RENDERED_W;
 const INNER_H = SCENE_RENDERED_H;
+const SCENE = SCENE_W;                               // legacy alias used by some cursor coords
 
 // Timeline (extended):
 // 0.0  – 3.2  Step 1  New Booking form → Search
@@ -80,7 +86,12 @@ const INNER_H = SCENE_RENDERED_H;
 // 13.0 – 15.5 Step 6  Booking 26142 detail
 // 16.0 – 18.1 Step 7  Sidebar reopens → click Statistics (extra dwell on the click)
 // 18.1 – 22.8 Step 8  Statistics dashboard (KPIs + charts)
+// Total duration of the seamless loop, in real seconds. The internal scene
+// clock (`lt` inside FlowScene) is REMAPPED so that all the original
+// timeline math (s1End, s2Start, …, 22.8) still works — we just play it
+// back faster. Scale factor = TIMELINE_SECONDS / DURATION.
 const DURATION = 22.8;
+const TIMELINE_SECONDS = 22.8;
 
 const C = {
   bg: '#FAF7F2',
@@ -351,7 +362,7 @@ const SaveToast = ({ k }) => {
             Booking saved
           </div>
           <div style={{ fontSize: 20, color: C.mute, fontWeight: 500 }}>
-            Booking #26142 · Noah Adams
+            Booking 26142 · Noah Adams
           </div>
         </div>
       </div>
@@ -473,7 +484,7 @@ const TweaksContext = React.createContext({ single: '', double: '', queen: '' })
 // Steps fill the full 1080 × SCENE_H (1483) portrait scene so the rendered
 // card fills the 670×920 region. STEP_BOX_TOP/H kept as aliases (== 0/SCENE_H)
 // so any references downstream still resolve.
-const STEP_PAD = 60;
+const STEP_PAD = 12;
 const STEP_BOX_H = SCENE_H;
 const STEP_BOX_TOP = 0;
 
@@ -552,7 +563,7 @@ const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
   // space below it.
   const dropK = clampK(t, 3.15, 3.8);
   const dropEased = dropK * dropK * (3 - 2 * dropK);
-  const ROOMS_H = 540; // expanded height of Available rooms panel (fits below form + above total bar)
+  const ROOMS_H = 600; // expanded height of Available rooms panel (fits below form + above total bar)
   const dropH = ROOMS_H * dropEased;
 
   return (
@@ -597,7 +608,7 @@ const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
 
       {/* ── Available Rooms — expanding dropdown panel below the form ── */}
       <div style={{
-        margin: '20px 56px 0',
+        margin: '24px 40px 0',
         background: C.cardSoft || '#F7F4EE',
         borderRadius: 16,
         border: `1px solid ${C.line}`,
@@ -607,19 +618,19 @@ const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
         overflow: dropEased >= 0.999 ? 'visible' : 'hidden',
         opacity: dropEased,
       }}>
-        <div style={{ padding: '20px 24px 16px', minWidth: 800 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ padding: '24px 28px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 18 }}>
             <div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: C.text, letterSpacing: -0.6 }}>
+              <div style={{ fontSize: 30, fontWeight: 800, color: C.text, letterSpacing: -0.7 }}>
                 Available rooms
               </div>
-              <div style={{ fontSize: 14, color: C.mute, fontWeight: 500, marginTop: 2 }}>
+              <div style={{ fontSize: 15, color: C.mute, fontWeight: 500, marginTop: 4 }}>
                 3 options · Thu 14 Oct → Fri 15 Oct · 1 night
               </div>
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, position: 'relative' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, position: 'relative' }}>
             {rooms.map((r, i) => {
               const ap = clampK(roomT, 0.4 + i * 0.16, 0.8 + i * 0.16);
               const isSingle = i === 0;
@@ -637,42 +648,43 @@ const Step12_Combined = ({ t, visible, nextPulse, addedOverride }) => {
                 }}>
                   <div style={{
                     borderRadius: 12,
-                    background: 'white',
-                    border: `2px solid ${isSingle && added ? C.greenAccent : C.line}`,
-                    boxShadow: isSingle && added ? `0 0 0 3px ${C.greenSoft}` : 'none',
-                    transition: 'border-color 0.4s',
+                    background: isSingle && added ? '#FAFAFB' : 'white',
+                    border: `2px solid ${isSingle && added ? C.navy : C.line}`,
+                    boxShadow: isSingle && added ? '0 1px 0 rgba(14,34,53,0.04)' : 'none',
+                    transition: 'border-color 0.4s, background 0.4s',
                     overflow: 'visible',
                   }}>
                     {/* Main room row */}
                     <div style={{
-                      display: 'flex', alignItems: 'center', gap: 16,
-                      padding: 12,
+                      display: 'flex', alignItems: 'center', gap: 18,
+                      padding: 14,
                     }}>
                       <img src={r.img} alt={r.name} style={{
-                        width: 96, height: 70, borderRadius: 8, flexShrink: 0,
+                        width: 110, height: 80, borderRadius: 8, flexShrink: 0,
                         objectFit: 'cover', display: 'block',
                       }} />
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 700, fontSize: 20, color: C.text, letterSpacing: -0.3 }}>{r.name}</div>
-                        <div style={{ fontSize: 13, color: C.mute, fontWeight: 500, marginTop: 1 }}>{r.beds}</div>
+                        <div style={{ fontWeight: 700, fontSize: 22, color: C.text, letterSpacing: -0.3 }}>{r.name}</div>
+                        <div style={{ fontSize: 14, color: C.mute, fontWeight: 500, marginTop: 2 }}>{r.beds}</div>
                       </div>
-                      <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginRight: 8, whiteSpace: 'nowrap' }}>
-                        {r.price} <span style={{ fontSize: 12, color: C.mute, fontWeight: 500 }}>/ night</span>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: C.text, marginRight: 8, whiteSpace: 'nowrap' }}>
+                        {r.price} <span style={{ fontSize: 13, color: C.mute, fontWeight: 500 }}>/ night</span>
                       </div>
                       <div style={{
-                        width: 48, height: 48, borderRadius: '50%',
-                        background: isSingle && added ? C.greenAccent : C.navy,
-                        color: 'white',
+                        width: 52, height: 52, borderRadius: '50%',
+                        background: isSingle && added ? 'white' : C.navy,
+                        color: isSingle && added ? C.navy : 'white',
+                        border: isSingle && added ? `2px solid ${C.navy}` : 'none',
                         display: 'grid', placeItems: 'center',
                         fontSize: 24, fontWeight: 400, lineHeight: 1,
                         transform: `scale(${isSingle && plusPulse ? 0.85 : 1})`,
-                        transition: 'background 0.4s, transform 0.12s',
+                        transition: 'background 0.4s, transform 0.12s, color 0.4s',
                         boxShadow: isSingle && plusPulse ? '0 0 0 8px rgba(248,124,86,0.18)' : 'none',
                         flexShrink: 0,
                       }} {...(isSingle ? { 'data-cursor-target': 'step2-plus' } : {})}>
                         {isSingle && added ? (
-                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                            <path d="m5 12 5 5L20 7" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <path d="M5 12.5 10 17.5 19.5 7" stroke={C.navy} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/>
                           </svg>
                         ) : '+'}
                       </div>
@@ -837,8 +849,8 @@ const Step3_PersonalData = ({ t, visible, savePulse }) => {
   const inK = clampK(t, 0.0, 0.4);
   // Fields fill in sequence
   const fields = [
-    { label: 'First name',  w: '60%' },
-    { label: 'Last name',   w: '70%' },
+    { label: 'First name',  w: '60%', typed: 'Noah' },
+    { label: 'Last name',   w: '70%', typed: 'Adams' },
     { label: 'Email',       w: '85%' },
     { label: 'Phone',       w: '50%' },
     { label: 'Address',     w: '90%' },
@@ -850,7 +862,7 @@ const Step3_PersonalData = ({ t, visible, savePulse }) => {
     <StepFrame minH={828} visible={visible} transform={`translateY(${(1 - inK) * 22}px) scale(${0.98 + 0.02 * inK})`}>
       <div style={{ padding: '54px 56px' }}>
         <div style={{ fontSize: 44, fontWeight: 800, color: C.text, letterSpacing: -1, marginBottom: 4 }}>
-          Add personal data
+          Add booking details
         </div>
         <div style={{ fontSize: 20, color: C.mute, fontWeight: 500, marginBottom: 32 }}>
           Booking 26142 · Single room · 1 night
@@ -860,6 +872,44 @@ const Step3_PersonalData = ({ t, visible, savePulse }) => {
           {fields.map((f, i) => {
             const k = clampK(t, fillStart[i], fillStart[i] + 0.25);
             const isFull = i === 4; // address full-width
+            // Typed-text fields: type out char by char over the same fill window,
+            // show a blinking caret while typing, then hold the full text.
+            if (f.typed) {
+              const typeWindow = 0.55; // a bit longer than the bar fills
+              const tk = clampK(t, fillStart[i], fillStart[i] + typeWindow);
+              const charsShown = Math.floor(tk * f.typed.length + 0.0001);
+              const shown = f.typed.slice(0, charsShown);
+              const isTyping = tk > 0 && tk < 1;
+              // Blink caret 2 Hz while typing, hold solid for a beat after, then hide
+              const blink = isTyping ? (Math.floor(t * 4) % 2 === 0) : false;
+              return (
+                <div key={i} style={{
+                  gridColumn: isFull ? '1 / span 2' : 'auto',
+                  border: `2px solid ${tk > 0 && tk < 1 ? C.green : C.line}`,
+                  borderRadius: 14,
+                  padding: '20px 24px',
+                  transition: 'border-color 0.2s',
+                }}>
+                  <div style={{ fontSize: 20, fontWeight: 600, color: C.text, marginBottom: 12 }}>{f.label}</div>
+                  <div style={{
+                    height: 26,
+                    display: 'flex', alignItems: 'center',
+                    fontSize: 22, fontWeight: 500, color: C.text,
+                    fontFamily: 'Inter, system-ui, sans-serif',
+                    letterSpacing: -0.2,
+                  }}>
+                    <span>{shown}</span>
+                    <span style={{
+                      display: 'inline-block',
+                      width: 2, height: 24, marginLeft: 2,
+                      background: C.text,
+                      opacity: isTyping ? (blink ? 1 : 0) : 0,
+                      transition: 'opacity 0.05s',
+                    }} />
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={i} style={{
                 gridColumn: isFull ? '1 / span 2' : 'auto',
@@ -940,49 +990,56 @@ const CALENDAR_DAYS = [
   { dow: 'WED', d: 13, mo: 'OCT' },
   { dow: 'THU', d: 14, mo: 'OCT', today: true },
   { dow: 'SAT', d: 16, mo: 'OCT' },
-  { dow: 'SUN', d: 17, mo: 'OCT' },
-  { dow: 'MON', d: 18, mo: 'OCT' },
-  { dow: 'TUE', d: 19, mo: 'OCT' },
 ];
 
 // Each row: roomType, then cell entries. Entries are either {n} for empty
 // availability number, or {bk: {name, span, tone, count}} where span=number
 // of columns the block covers and tone='dark' | 'light' | 'amber'.
+//
+// Booking blocks render with a half-day offset (start at noon of their
+// first day, end at noon of their last day) — this is the standard hotel
+// PMS style. So consecutive same-row bookings whose ranges meet exactly at
+// noon (e.g. checkout = checkin) DO NOT visually collide. Author rows so
+// each block's span "tiles" with its neighbours and any empty days are
+// shown as availability numbers.
 const CALENDAR_ROWS = [
+  // Single room — Emma checks out THU; Noah arrives THU; Olivia in SAT.
   { room: 'Single room', cells: [
-    { bk: { name: 'Emma Collins',  span: 2, tone: 'light', count: 1, end: 2 } },
-    { n: 13 },
+    { bk: { name: 'Emma Collins',  span: 3, tone: 'light', count: 1, end: 3 } },
     { bk: { name: 'Noah Adams',    span: 1, tone: 'dark',  count: null } },
-    { n: 5 },
-    { bk: { name: 'Sophia Turner', span: 1, tone: 'amber', count: 1, end: 7 } },
-    { n: 18 },
+    { bk: { name: 'Olivia Reed',   span: 1, tone: 'amber', count: 1 } },
   ]},
+  // Double room — James 2 nights, Sophie picks up next, Mia arrives SAT.
   { room: 'Double room', cells: [
     { bk: { name: 'James Campbell', span: 2, tone: 'light', count: 1 } },
-    { n: 13 }, { n: 14 }, { n: 16 }, { n: 17 }, { n: 18 }, { n: 19 },
+    { bk: { name: 'Sophie Lane',    span: 2, tone: 'dark',  count: 2 } },
+    { bk: { name: 'Mia Turner',     span: 1, tone: 'amber', count: 1 } },
   ]},
+  // Queen room — open Mon, Ava 1 night, gap, Ethan 2 nights through end.
   { room: 'Queen room', cells: [
-    { n: 11 }, { n: 12 }, { n: 13 }, { n: 14 },
-    { bk: { name: 'Ethan Cooper', span: 3, tone: 'amber', count: 1, end: 8 } },
-    { n: 19 },
+    { n: 11 },
+    { bk: { name: 'Ava Mitchell',   span: 1, tone: 'light', count: 1 } },
+    { n: 13 },
+    { bk: { name: 'Ethan Cooper',   span: 2, tone: 'amber', count: 1, end: 5 } },
   ]},
+  // King room — Lucas 1 night, gap, Jason 2 nights, Chloe 1 night.
   { room: 'King room', cells: [
-    { n: 11 }, { n: 12 }, { n: 13 },
-    { bk: { name: 'Jason Bradley', span: 1, tone: 'light', count: 1 } },
-    { n: 16 }, { n: 17 },
-    { bk: { name: 'Michelle Terr', span: 1, tone: 'amber', count: 1, end: 8 } },
-    { n: 19 },
+    { bk: { name: 'Lucas Hayes',    span: 1, tone: 'dark',  count: 2 } },
+    { n: 12 },
+    { bk: { name: 'Jason Bradley',  span: 2, tone: 'light', count: 1 } },
+    { bk: { name: 'Chloe Brooks',   span: 1, tone: 'amber', count: 1 } },
   ]},
+  // Deluxe room — James 3-night stay, Hannah picks up for the last 2.
   { room: 'Deluxe room', cells: [
-    { bk: { name: 'James Brook', span: 3, tone: 'light', count: null, end: 4 } },
-    { n: 15 }, { n: 16 }, { n: 17 }, { n: 18 },
+    { bk: { name: 'James Brook',    span: 3, tone: 'light', count: null, end: 4 } },
+    { bk: { name: 'Hannah Price',   span: 2, tone: 'dark',  count: 2 } },
   ]},
+  // Twin room — Paul, gap, Anna 2 nights, gap.
   { room: 'Twin room', cells: [
-    { n: 1 },
-    { bk: { name: 'Paul Wild', span: 1, tone: 'light', count: 1 } },
-    { n: 2 }, { n: 13 },
-    { bk: { name: 'Anna Paul', span: 2, tone: 'dark', count: 1, end: 7 } },
-    { n: 18 },
+    { bk: { name: 'Paul Wild',      span: 1, tone: 'light', count: 1 } },
+    { n: 12 },
+    { bk: { name: 'Anna Paul',      span: 2, tone: 'dark', count: 1, end: 5 } },
+    { n: 16 },
   ]},
 ];
 
@@ -990,8 +1047,8 @@ const Step5_BookingsList = ({ t, visible, hoverIdx = -1, selectedIdx = -1, vibra
   const inK = clampK(t, 0.0, 0.4);
 
   // Compute layout
-  const rowLabelW = 200;
-  const dayColW = (960 - rowLabelW) / 8; // content width 960, 8 day cols
+  const rowLabelW = 130;
+  const dayColW = (960 - rowLabelW) / 5; // content width 960, 5 day cols
   const rowH = 78;
   const headerH = 78;
   const toolbarH = 84;
@@ -1017,14 +1074,14 @@ const Step5_BookingsList = ({ t, visible, hoverIdx = -1, selectedIdx = -1, vibra
   return (
     <StepFrame visible={visible} transform={`translateY(${(1 - inK) * 22}px) scale(${0.98 + 0.02 * inK})`}>
       {/* Header */}
-      <div style={{ padding: '36px 56px 18px' }}>
+      <div style={{ padding: '36px 28px 18px' }}>
         <div style={{ fontSize: 48, fontWeight: 800, color: C.text, letterSpacing: -1.2 }}>Calendar</div>
       </div>
 
       {/* Toolbar */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 12,
-        padding: '0 56px 22px',
+        padding: '0 28px 22px',
       }}>
         {/* Date nav cluster */}
         <div style={{
@@ -1063,14 +1120,14 @@ const Step5_BookingsList = ({ t, visible, hoverIdx = -1, selectedIdx = -1, vibra
 
       {/* Calendar grid */}
       <div style={{
-        margin: '0 56px',
+        margin: '0 28px',
         background: 'white', border: `1px solid ${C.line}`, borderRadius: 12,
         overflow: 'hidden',
       }}>
         {/* Day header row */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: `${rowLabelW}px repeat(8, 1fr)`,
+          gridTemplateColumns: `${rowLabelW}px repeat(5, 1fr)`,
           borderBottom: `1px solid ${C.line}`, height: headerH,
         }}>
           <div style={{
@@ -1112,7 +1169,7 @@ const Step5_BookingsList = ({ t, visible, hoverIdx = -1, selectedIdx = -1, vibra
           return (
             <div key={ri} style={{
               display: 'grid',
-              gridTemplateColumns: `${rowLabelW}px repeat(8, 1fr)`,
+              gridTemplateColumns: `${rowLabelW}px repeat(5, 1fr)`,
               height: rowH,
               borderBottom: ri === CALENDAR_ROWS.length - 1 ? 'none' : `1px solid ${C.line}`,
               opacity: ap,
@@ -1149,8 +1206,8 @@ const Step5_BookingsList = ({ t, visible, hoverIdx = -1, selectedIdx = -1, vibra
                 {ri === 1 && dragK > 0 && (
                   <div style={{
                     position: 'absolute',
-                    left: `calc(3 * (100% / 8) + (100% / 8) * 0.5 + 3px)`,
-                    width: `calc((100% / 8) + 14px)`,
+                    left: `calc(3 * (100% / 5) + (100% / 5) * 0.5 + 3px)`,
+                    width: `calc((100% / 5) + 14px)`,
                     top: 14, bottom: 14,
                     borderRadius: 8,
                     border: `2px dashed ${C.greenAccent}`,
@@ -1161,8 +1218,8 @@ const Step5_BookingsList = ({ t, visible, hoverIdx = -1, selectedIdx = -1, vibra
                   }} />
                 )}
                 {items.map((it, ii) => {
-                  const colW = `calc((100% / 8))`;
-                  const startPct = `calc(${(it.kind === 'bk' ? it.start : it.col)} * (100% / 8))`;
+                  const colW = `calc((100% / 5))`;
+                  const startPct = `calc(${(it.kind === 'bk' ? it.start : it.col)} * (100% / 5))`;
                   if (it.kind === 'n') {
                     // Hide the empty number on Double room's THU cell while dragging
                     // — the green dashed drop indicator takes its place.
@@ -1183,10 +1240,10 @@ const Step5_BookingsList = ({ t, visible, hoverIdx = -1, selectedIdx = -1, vibra
                   const isHover = isFocus && hoverIdx === 0 && selectedIdx < 0 && vibrateK <= 0 && dragK <= 0;
                   const isSelected = isFocus && selectedIdx === 0;
                   const liftK = isSelected ? selectK : 0;
-                  const w = `calc(${it.span} * (100% / 8))`;
+                  const w = `calc(${it.span} * (100% / 5))`;
                   // Block sits halfway over the start day and extends for span days,
                   // visually overlapping the next cell — matches real Sirvoy calendar.
-                  const offset = `calc((100% / 8) * 0.5)`;
+                  const offset = `calc((100% / 5) * 0.5)`;
                   // Drag-and-drop transforms — applied only to the focus block.
                   // vibrateK 0→1: small rotational shake while user "holds" the block.
                   // dragK    0→1: drops one row height (rowH) onto the Double row.
@@ -1352,16 +1409,6 @@ const Step6_BookingDetail = ({ t, visible }) => {
             fontSize: 15, fontWeight: 700, letterSpacing: 0.2,
           }}>CONFIRMED</div>
           <div style={{ flex: 1 }} />
-          <div style={{
-            display: 'inline-flex', alignItems: 'center', gap: 8,
-            padding: '6px 12px', borderRadius: 999,
-            background: '#F2F4F7', color: C.text,
-            fontSize: 14, fontWeight: 600, letterSpacing: 0.1,
-            border: `1px solid ${C.line}`,
-          }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: C.mute, letterSpacing: 1.2 }}>SOURCE</span>
-            <span>Reception</span>
-          </div>
           <div style={{ fontSize: 17, color: C.mute, fontWeight: 500 }}>Double room · 1 night</div>
         </div>
 
@@ -1372,7 +1419,6 @@ const Step6_BookingDetail = ({ t, visible }) => {
           transform: `translateY(${(1 - k1) * 10}px)`,
         }}>
           <ActionBtn icon={<IconClock />} label="Change dates" />
-          <ActionBtn icon={<IconScissors />} label="Divide booking" />
           <ActionBtn icon={<IconPhone />} label="Send SMS" />
           <ActionBtn icon={<IconMail />} label="Send email" />
           <ActionBtn icon={<IconPrinter />} label="Print" />
@@ -1430,34 +1476,6 @@ const Step6_BookingDetail = ({ t, visible }) => {
             <div style={{ fontSize: 22, fontWeight: 800, color: C.text, textAlign: 'right' }}>€148.00</div>
           </div>
         </div>
-
-        {/* Notes / extras (skeleton) */}
-        <div style={{
-          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14,
-          opacity: k4,
-          transform: `translateY(${(1 - k4) * 12}px)`,
-        }}>
-          <div style={{
-            background: 'white', borderRadius: 16, padding: '18px 24px',
-            border: `1px solid ${C.line}`,
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.mute, letterSpacing: 1.2, marginBottom: 10 }}>NOTES</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ height: 10, borderRadius: 4, background: C.lineSoft, width: '88%' }} />
-              <div style={{ height: 10, borderRadius: 4, background: C.lineSoft, width: '72%' }} />
-            </div>
-          </div>
-          <div style={{
-            background: 'white', borderRadius: 16, padding: '18px 24px',
-            border: `1px solid ${C.line}`,
-          }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.mute, letterSpacing: 1.2, marginBottom: 10 }}>EXTRAS</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ height: 10, borderRadius: 4, background: C.lineSoft, width: '60%' }} />
-              <div style={{ height: 10, borderRadius: 4, background: C.lineSoft, width: '80%' }} />
-            </div>
-          </div>
-        </div>
       </div>
     </StepFrame>
   );
@@ -1509,11 +1527,15 @@ const STEP8_OCCUPANCY = [
 
 // Row 3 — Booking created in this timeframe
 const STEP8_NEW_BOOKINGS = 81;
-// Source breakdown — percentages, ordered by value (legend swatch + bar color)
+// Source breakdown — percentages, ordered by value (color swatch + bar color)
 const STEP8_SOURCE = [
-  { label: 'Booking.com', value: 54, color: '#1F2C7A' }, // dark navy/blue
-  { label: 'Website',     value: 32, color: '#F08363' }, // soft orange
-  { label: 'Front desk',  value: 14, color: '#7E58A6' }, // purple
+  { label: 'Booking.com',  value: 38, color: '#003580' }, // brand navy blue
+  { label: 'Website',      value: 22, color: '#F08363' }, // soft orange
+  { label: 'Airbnb',       value: 14, color: '#FF5A5F' }, // brand coral
+  { label: 'Expedia',      value: 10, color: '#FDB813' }, // brand gold
+  { label: 'Agoda',        value:  7, color: '#5B45D6' }, // brand purple
+  { label: 'Hostelworld',  value:  5, color: '#F26B36' }, // brand orange
+  { label: 'Front desk',   value:  4, color: '#7E58A6' }, // muted purple
 ];
 // Made-by breakdown
 const STEP8_MADEBY = [
@@ -1533,13 +1555,165 @@ const STEP8_OCC_ROOMS = [
 
 const fmtNum = (n) => Math.round(n).toLocaleString('en-US');
 
+// ──────────────── Step 8 (replacement): Channel Manager ────────────────
+// Connect-the-channels page that mirrors the user's wireframe:
+// two columns of channel cards (Booking.com, Airbnb, Google, iCal, SiteMinder
+// on the left; Expedia, Agoda, Hostelworld, myallocator, bookvisit on the right)
+// each with a dark "+ Add new" button, and a few showing Active/Inactive rows.
+// Numbers/rows tick in from top to bottom so the page feels alive.
+const CHAN_LEFT = [
+  { logo: 'channels/booking.png',   alt: 'Booking.com',
+    rows: [{ id: 'Hotel ID 1', status: 'active',   mapped: '4 mapped' },
+           { id: 'Hotel ID 2', status: 'inactive', mapped: '0 mapped' }] },
+  { logo: 'channels/airbnb.png',    alt: 'airbnb' },
+  { logo: 'channels/agoda.png',     alt: 'Google Hotel Ads' },  // swap if google logo missing
+  { logo: 'channels/siteminder.png', alt: 'SiteMinder' },
+];
+const CHAN_RIGHT = [
+  { logo: 'channels/expedia.png',     alt: 'Expedia',
+    rows: [{ id: 'Hotel ID',  status: 'active', mapped: '4 mapped' }] },
+  { logo: 'channels/agoda.png',       alt: 'agoda',
+    rows: [{ id: 'Hotel ID',  status: 'active', mapped: '4 mapped' }] },
+  { logo: 'channels/hostelworld.png', alt: 'Hostelworld' },
+  { logo: 'channels/myallocator.png', alt: 'myallocator' },
+];
+
+const StatusPill = ({ status }) => {
+  const isActive = status === 'active';
+  return (
+    <div style={{
+      display: 'inline-block',
+      padding: '4px 12px', borderRadius: 4,
+      fontSize: 13, fontWeight: 700,
+      background: isActive ? '#22A555' : '#E5E8ED',
+      color: isActive ? 'white' : '#3F4A57',
+      letterSpacing: 0.2,
+    }}>
+      {isActive ? 'Active' : 'Inactive'}
+    </div>
+  );
+};
+
+const ChannelCard = ({ ch, ramp }) => (
+  <div style={{
+    background: 'white',
+    borderRadius: 8,
+    border: `1px solid ${C.line}`,
+    padding: ch.rows ? '24px 26px 14px' : '24px 26px',
+    opacity: ramp,
+    transform: `translateY(${(1 - ramp) * 10}px)`,
+    transition: 'opacity 0.05s, transform 0.05s',
+  }}>
+    {/* Header row: logo + Add new */}
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+      <img src={ch.logo} alt={ch.alt} style={{
+        height: ch.rows ? 32 : 28, maxWidth: 200, objectFit: 'contain',
+        display: 'block',
+      }} />
+      <button style={{
+        background: '#0E2235', color: 'white', border: 'none',
+        borderRadius: 6, padding: '10px 16px',
+        fontSize: 14, fontWeight: 600,
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        cursor: 'default', flexShrink: 0,
+      }}>
+        <span style={{ fontSize: 18, lineHeight: 1, fontWeight: 400 }}>+</span>
+        Add new
+      </button>
+    </div>
+
+    {/* Optional status table */}
+    {ch.rows && (
+      <div style={{ marginTop: 16 }}>
+        {/* table headers */}
+        <div style={{
+          display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 0.4fr',
+          padding: '0 0 8px', gap: 8,
+          borderBottom: `1px solid ${C.lineSoft || '#EDEEF0'}`,
+        }}>
+          {['HOTEL ID', 'STATUS', 'ROOM TYPES', 'ACTIONS'].map(h => (
+            <div key={h} style={{
+              fontSize: 11, fontWeight: 700, letterSpacing: 1,
+              color: C.mute,
+            }}>{h}</div>
+          ))}
+        </div>
+        {ch.rows.map((row, i) => (
+          <div key={i} style={{
+            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 0.4fr',
+            padding: '14px 0', gap: 8, alignItems: 'center',
+            borderBottom: i < ch.rows.length - 1 ? `1px solid ${C.lineSoft || '#EDEEF0'}` : 'none',
+            fontSize: 15, color: C.text,
+          }}>
+            <div style={{ fontWeight: 500 }}>{row.id}</div>
+            <div><StatusPill status={row.status} /></div>
+            <div style={{ color: C.text, whiteSpace: 'nowrap' }}>{row.mapped}</div>
+            <div>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                <path d="M4 20h4l10-10-4-4L4 16v4z M14 6l4 4" stroke="#3D7AB8" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              </svg>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+);
+
+const Step8_Channels = ({ t, visible }) => {
+  const inK = clampK(t, 0.0, 0.5);
+  const camScale = lerp(1.04, 1.0, Easing.easeOutCubic(inK));
+
+  // Cards ramp in cascading top→bottom
+  const cardRamp = (idx) => Easing.easeOutCubic(clampK(t, 0.25 + idx * 0.10, 0.85 + idx * 0.10));
+
+  return (
+    <StepFrame minH={828} visible={visible} transform={`scale(${camScale})`}>
+      <div style={{
+        width: '100%', minHeight: 828,
+        opacity: inK,
+        padding: '24px 26px 28px',
+        background: '#EBF2F7',
+        overflow: 'hidden',
+        display: 'flex', flexDirection: 'column',
+        boxSizing: 'border-box',
+      }}>
+        {/* Page header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, padding: '0 6px' }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.mute, letterSpacing: 1, whiteSpace: 'nowrap' }}>SETTINGS › CHANNELS</div>
+            <div style={{ fontSize: 30, fontWeight: 800, color: C.text, letterSpacing: -0.6, marginTop: 4 }}>Channel manager</div>
+          </div>
+          <div style={{ fontSize: 14, color: C.mute, fontWeight: 500, textAlign: 'right' }}>9 integrations<br/>4 connected</div>
+        </div>
+
+        {/* Two-column grid */}
+        <div style={{
+          flex: 1, minHeight: 0,
+          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14,
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, justifyContent: 'space-between' }}>
+            {CHAN_LEFT.map((ch, i) => (
+              <ChannelCard key={ch.alt} ch={ch} ramp={cardRamp(i)} />
+            ))}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, justifyContent: 'space-between' }}>
+            {CHAN_RIGHT.map((ch, i) => (
+              <ChannelCard key={ch.alt} ch={ch} ramp={cardRamp(i + 0.5)} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </StepFrame>
+  );
+};
+
 const Step8_Statistics = ({ t, visible }) => {
   // Phased ramps over the ~5s scene
   const inK     = clampK(t, 0.0, 0.5);                    // overall page fade-in
-  const r1K     = clampK(t, 0.30, 1.30);                  // row 1 cards
-  const r2K     = clampK(t, 0.70, 1.70);                  // row 2 cards
-  const r3K     = clampK(t, 1.10, 2.30);                  // row 3 (bars)
-  const r4K     = clampK(t, 1.60, 3.20);                  // row 4 area chart
+  const r1K     = clampK(t, 0.30, 1.20);                  // Key Metrics
+  const r2K     = clampK(t, 0.60, 1.60);                  // Source bars
+  const r4K     = clampK(t, 1.00, 2.20);                  // chart
 
   // Camera: gentle zoom-in entry
   const camScale = lerp(1.04, 1.0, Easing.easeOutCubic(inK));
@@ -1577,7 +1751,7 @@ const Step8_Statistics = ({ t, visible }) => {
     background: 'white',
     border: `1px solid ${C.line}`,
     borderRadius: 14,
-    padding: '20px 24px',
+    padding: '28px 32px',
     opacity: rampK,
     transform: `translateY(${(1 - rampK) * 12}px)`,
     transition: 'opacity 0.05s, transform 0.05s',
@@ -1586,19 +1760,19 @@ const Step8_Statistics = ({ t, visible }) => {
 
   const SectionTitle = ({ children }) => (
     <div style={{
-      fontSize: 17, fontWeight: 700, color: C.text, letterSpacing: -0.2,
-      marginBottom: 14,
+      fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: -0.3,
+      marginBottom: 22,
     }}>{children}</div>
   );
 
   const StatCell = ({ label, currency, value, sub }) => (
     <div>
-      <div style={{ fontSize: 12, fontWeight: 600, color: C.mute, marginBottom: 6 }}>{label}</div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, fontVariantNumeric: 'tabular-nums' }}>
-        {currency && <span style={{ fontSize: 22, color: C.text, fontWeight: 600, letterSpacing: -0.4, lineHeight: 1 }}>{CUR_SYMBOL}</span>}
-        <span style={{ fontSize: 30, fontWeight: 700, color: C.text, letterSpacing: -0.6, lineHeight: 1 }}>{value}</span>
+      <div style={{ fontSize: 15, fontWeight: 600, color: C.mute, marginBottom: 10 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 5, fontVariantNumeric: 'tabular-nums' }}>
+        {currency && <span style={{ fontSize: 28, color: C.text, fontWeight: 600, letterSpacing: -0.4, lineHeight: 1 }}>{CUR_SYMBOL}</span>}
+        <span style={{ fontSize: 42, fontWeight: 700, color: C.text, letterSpacing: -0.8, lineHeight: 1 }}>{value}</span>
       </div>
-      {sub && <div style={{ fontSize: 12, color: C.mute, marginTop: 6, lineHeight: 1.4 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 14, color: C.mute, marginTop: 10, lineHeight: 1.4 }}>{sub}</div>}
     </div>
   );
 
@@ -1684,140 +1858,111 @@ const Step8_Statistics = ({ t, visible }) => {
         width: '100%', height: '100%',
         opacity: inK,
         display: 'flex', flexDirection: 'column',
-        padding: '22px 24px 28px',
-        gap: 14,
+        padding: '24px 28px 30px',
+        gap: 18,
         background: '#F4F5F7',
         overflow: 'hidden',
       }}>
         {/* Header: "Statistics" + right-side toolbar (Generate file, Filters) */}
         <div style={{ display: 'flex', alignItems: 'center', padding: '4px 4px 0' }}>
-          <div style={{ fontSize: 26, fontWeight: 700, color: C.text, letterSpacing: -0.6 }}>Statistics</div>
+          <div style={{ fontSize: 34, fontWeight: 700, color: C.text, letterSpacing: -0.8 }}>Statistics</div>
           <div style={{ flex: 1 }} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <button style={{
-              background: 'white', border: `1px solid ${C.line}`, borderRadius: 6,
-              padding: '7px 12px', fontSize: 12, color: C.text, fontWeight: 500,
+              background: 'white', border: `1px solid ${C.line}`, borderRadius: 7,
+              padding: '9px 14px', fontSize: 14, color: C.text, fontWeight: 500,
               display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'default',
             }}>
               Generate report
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                 <path d="M8 2 V11 M4 7 L8 11 L12 7 M3 13 H13" stroke={C.text} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
             <button style={{
-              background: 'white', border: `1px solid ${C.line}`, borderRadius: 6,
-              padding: '7px 12px', fontSize: 12, color: C.text, fontWeight: 500,
+              background: 'white', border: `1px solid ${C.line}`, borderRadius: 7,
+              padding: '9px 14px', fontSize: 14, color: C.text, fontWeight: 500,
               display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'default',
             }}>
               Filters
-              <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3 L5 7 L8 3" stroke={C.text} strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              <svg width="11" height="11" viewBox="0 0 10 10"><path d="M2 3 L5 7 L8 3" stroke={C.text} strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
             <div style={{
-              width: 24, height: 24, borderRadius: '50%', background: 'white', border: `1px solid ${C.line}`,
-              display: 'grid', placeItems: 'center', fontSize: 13, color: C.mute, fontWeight: 600,
+              width: 30, height: 30, borderRadius: '50%', background: 'white', border: `1px solid ${C.line}`,
+              display: 'grid', placeItems: 'center', fontSize: 16, color: C.mute, fontWeight: 600,
             }}>?</div>
           </div>
         </div>
 
-        {/* Row 1 — Key Metrics | Invoicing */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <div style={cardStyle(r1K)}>
-            <SectionTitle>Key Metrics</SectionTitle>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
-              <StatCell
-                label="Value"
-                currency={CUR}
-                value={tickN(STEP8_KM.value.total)}
-                sub={`Room: €${fmtNum(STEP8_KM.value.room * kpiE)}\nExtras: €${fmtNum(STEP8_KM.value.extras * kpiE)}`.split('\n').map((s, i) => <div key={i}>{s}</div>)}
-              />
-              <StatCell label="Average Daily Rate (ADR)"      currency={CUR} value={tickN(STEP8_KM.adr)} />
-              <StatCell label="Revenue per Available Room (RevPAR)" currency={CUR} value={tickN(STEP8_KM.revpar)} />
-            </div>
-          </div>
-          <div style={cardStyle(r1K)}>
-            <SectionTitle>Invoicing</SectionTitle>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
-              {STEP8_INVOICING.map(it => (
-                <StatCell key={it.label} label={it.label} currency={CUR} value={tickN(it.value)} sub={it.sub || null} />
-              ))}
-            </div>
+        {/* Row 1 — Key Metrics (full width) */}
+        <div style={cardStyle(r1K)}>
+          <SectionTitle>Key Metrics</SectionTitle>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr', gap: 32 }}>
+            <StatCell
+              label="Value"
+              currency={CUR}
+              value={tickN(STEP8_KM.value.total)}
+              sub={`Room: €${fmtNum(STEP8_KM.value.room * kpiE)}\nExtras: €${fmtNum(STEP8_KM.value.extras * kpiE)}`.split('\n').map((s, i) => <div key={i}>{s}</div>)}
+            />
+            <StatCell label="ADR"      currency={CUR} value={tickN(STEP8_KM.adr)} />
+            <StatCell label="RevPAR" currency={CUR} value={tickN(STEP8_KM.revpar)} />
           </div>
         </div>
 
-        {/* Row 2 — Payments | Occupancy during this timeframe */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <div style={cardStyle(r2K)}>
-            <SectionTitle>Payments</SectionTitle>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
-              {STEP8_PAYMENTS.map(it => (
-                <StatCell key={it.label} label={it.label} currency={CUR} value={tickN(it.value)} />
-              ))}
-            </div>
-          </div>
-          <div style={cardStyle(r2K)}>
-            <SectionTitle>Occupancy during this timeframe</SectionTitle>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 18 }}>
-              {STEP8_OCCUPANCY.map(it => (
-                <StatCell
-                  key={it.label}
-                  label={it.label}
-                  value={it.pct ? `${tickPct(it.value)}%` : tickN(it.value)}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Row 3 — Booking created in this timeframe */}
-        <div style={cardStyle(r3K)}>
-          <SectionTitle>Booking created in this timeframe</SectionTitle>
-          <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: 20, alignItems: 'flex-start' }}>
-            {/* New bookings — big number */}
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: C.mute, marginBottom: 6 }}>New bookings</div>
-              <div style={{ fontSize: 34, fontWeight: 700, color: C.text, letterSpacing: -0.6, fontVariantNumeric: 'tabular-nums' }}>
-                {tickN(STEP8_NEW_BOOKINGS)}
-              </div>
-            </div>
-
-            {/* Source */}
-            <div>
-              <div style={{ fontSize: 12, color: C.mute, fontWeight: 600, marginBottom: 10 }}>Source</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {STEP8_SOURCE.map((row, i) => (
-                  <BarRow key={row.label} row={row} idx={i} baseDelay={1.30} axisMax={60} totalRamp={r3K} labelW={70} />
-                ))}
-              </div>
-              <Axis max={60} labelW={70} />
-              <Legend items={[...STEP8_SOURCE].reverse()} />
-            </div>
-
-            {/* Made by */}
-            <div>
-              <div style={{ fontSize: 12, color: C.mute, fontWeight: 600, marginBottom: 10 }}>Made by</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {STEP8_MADEBY.map((row, i) => (
-                  <BarRow key={row.label} row={row} idx={i} baseDelay={1.55} axisMax={90} totalRamp={r3K} labelW={110} />
-                ))}
-              </div>
-              <Axis max={90} labelW={110} />
-              <Legend items={[...STEP8_MADEBY].reverse()} />
-            </div>
+        {/* Row 2 — Channel booking source */}
+        <div style={cardStyle(r2K)}>
+          <SectionTitle>Channel booking source</SectionTitle>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {STEP8_SOURCE.map((row, i) => {
+              const rowK = clampK(t, 0.70 + i * 0.08, 1.40 + i * 0.08);
+              const barK = Easing.easeOutCubic(rowK);
+              // Scale to the largest source value
+              const widthPct = (row.value / 40) * 100 * barK;
+              const valShown = Math.round(row.value * barK);
+              return (
+                <div key={row.label} style={{
+                  display: 'grid',
+                  gridTemplateColumns: '180px 1fr 60px',
+                  alignItems: 'center', gap: 16,
+                  opacity: r2K,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 16, color: C.text, fontWeight: 600 }}>
+                    <span style={{
+                      width: 28, height: 28, background: row.color, borderRadius: 6,
+                      flexShrink: 0,
+                      boxShadow: `0 2px 6px ${row.color}33`,
+                    }} />
+                    {row.label}
+                  </div>
+                  <div style={{ position: 'relative', height: 18, background: '#F0F2F5', borderRadius: 4 }}>
+                    <div style={{
+                      height: '100%',
+                      width: `${widthPct}%`,
+                      background: row.color,
+                      borderRadius: 4,
+                      transition: 'width 0.05s',
+                    }} />
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: C.text, fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>
+                    {valShown}%
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        {/* Row 4 — Charts (Occupied rooms over timeframe) */}
+        {/* Row 3 — Charts (Occupied rooms over timeframe) */}
         <div style={cardStyle(r4K, { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 })}>
           <SectionTitle>Charts</SectionTitle>
           <div style={{
             display: 'inline-flex', alignItems: 'center', justifyContent: 'space-between',
-            gap: 10, padding: '7px 12px',
-            border: `1px solid ${C.line}`, borderRadius: 6,
-            fontSize: 12, color: C.text, fontWeight: 500,
-            width: 200, marginBottom: 12, background: 'white',
+            gap: 12, padding: '10px 16px',
+            border: `1px solid ${C.line}`, borderRadius: 8,
+            fontSize: 15, color: C.text, fontWeight: 500,
+            width: 240, marginBottom: 18, background: 'white',
           }}>
             Occupied rooms
-            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3 L5 7 L8 3" stroke={C.text} strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            <svg width="12" height="12" viewBox="0 0 10 10"><path d="M2 3 L5 7 L8 3" stroke={C.text} strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             <svg viewBox={`0 0 ${CW} ${CH}`} width="100%" height="100%" preserveAspectRatio="none" style={{ display: 'block' }}>
@@ -1838,7 +1983,7 @@ const Step8_Statistics = ({ t, visible }) => {
                   />
                   <text
                     x={padL - 6} y={py(v) + 3}
-                    fontSize="10" fill="#6A7A8C" textAnchor="end"
+                    fontSize="14" fill="#6A7A8C" textAnchor="end"
                     fontFamily="Inter, system-ui, sans-serif"
                   >{v}</text>
                 </g>
@@ -1915,7 +2060,7 @@ const StepCaption = ({ t }) => {
 // ──────────────── Master Scene ────────────────
 const FlowScene = () => {
   const t = useTime();
-  const lt = t % DURATION;
+  const lt = (t % DURATION) * (TIMELINE_SECONDS / DURATION);
 
   const T = {
     s1End: 3.2,
@@ -1932,14 +2077,16 @@ const FlowScene = () => {
   // Visibility
   // Step 1+2 are now a single continuous screen (form compacts into a summary bar
   // and rooms slide in below). It runs from t=0 → t=s2End, then fades out into Step 3.
-  const v12 = clampK(lt, 0, 0.2) * (1 - clampK(lt, T.s2End, T.s2End + 0.3));
+  // The fade-IN at the loop start is also slightly softened so that the loop seam
+  // (v8 → v12 wrap-around) crossfades cleanly instead of cutting hard.
+  const v12 = clampK(lt, 0, 0.45) * (1 - clampK(lt, T.s2End, T.s2End + 0.3));
   const v3 = clampK(lt, T.s3Start, T.s3Start + 0.3) * (1 - clampK(lt, T.s4Start - 0.4, T.s4Start - 0.1));
   // Step 3 (personal data) stays visible UNDER the sidebar in step 4, then fades to step 5
   const v3Under = clampK(lt, T.s3Start, T.s3Start + 0.3) * (1 - clampK(lt, T.s5Start - 0.0, T.s5Start + 0.3));
   const v5 = clampK(lt, T.s5Start, T.s5Start + 0.3) * (1 - clampK(lt, T.s6Start, T.s6Start + 0.3));
   // Booking detail stays visible UNDER the sidebar in step 7, then crossfades into Statistics in step 8.
   const v6 = clampK(lt, T.s6Start, T.s6Start + 0.3) * (1 - clampK(lt, T.s8Start - 0.0, T.s8Start + 0.4));
-  const v8 = clampK(lt, T.s8Start, T.s8Start + 0.4) * (1 - clampK(lt, T.loop - 0.4, T.loop + 0.2));
+  const v8 = clampK(lt, T.s8Start, T.s8Start + 0.4) * (1 - clampK(lt, T.loop - 0.45, T.loop));
 
   // Sidebar slide — opens in step 4 AND in step 7
   const sidebarIn4   = clampK(lt, T.s4Start, T.s4Start + 0.5);
@@ -1950,7 +2097,7 @@ const FlowScene = () => {
 
   const cursorOnCalendar = lt > T.s4Start + 1.2 && lt < T.s4End;
   const calendarClicked  = lt > T.s4Start + 1.7 && lt < T.s7Start;
-  // Extended dwell so the viewer clearly sees the cursor land on Statistics,
+  // Extended dwell so the viewer clearly sees the cursor land on Channels,
   // hover for a beat, then click.
   const cursorOnStats    = lt > T.s7Start + 0.95 && lt < T.s7Start + 1.95;
   const statsClicked     = lt > T.s7Start + 1.95;
@@ -2033,7 +2180,7 @@ const FlowScene = () => {
     [T.s6Start + 0.6,  'step6-title', 1],
     [T.s6Start + 2.0,  'step6-title', 1],
 
-    // Step 7 — sidebar reopens, cursor heads to Statistics and taps it
+    // Step 7 — sidebar reopens, cursor heads to Channels and taps it
     [T.s7Start + 0.1,  'step6-title', 0.4],   // ease away from title
     [T.s7Start + 0.4,  { x: SCENE * 0.4, y: SCENE * 0.5 }, 0.6],
     [T.s7Start + 1.05, 'sb-statistics', 1],
@@ -2141,7 +2288,7 @@ const FlowScene = () => {
 
       <SaveToast k={toastK} />
 
-      <Cursor x={cur.x} y={cur.y} opacity={lt >= T.s8Start ? 0 : cur.o} tap={isTapping && lt < T.s8Start} />
+      <Cursor x={cur.x} y={cur.y} opacity={(lt >= T.s8Start || (lt >= T.s5Start + 1.55 && lt < T.s6Start)) ? 0 : cur.o} tap={isTapping && lt < T.s8Start} />
       </div>
     </div>
   );
