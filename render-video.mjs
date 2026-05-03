@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PROJECT_DIR  = resolve(__dirname, 'project');
 const FRAMES_DIR   = '/tmp/sirvoy-frames';
-const OUTPUT_MOV   = resolve(__dirname, 'sirvoy-hero.mov');
+const OUTPUT_MOV   = resolve(__dirname, 'sirvoy-hero.webm');
 const SERVER_PORT  = 8789;
 
 const STAGE_W      = 1080;
@@ -131,13 +131,13 @@ async function main() {
   await browser.close();
   server.close();
 
-  console.log('🎞   Encoding ProRes 4444 .mov with alpha…');
+  console.log('🎞   Encoding VP9+alpha WebM…');
   const result = spawnSync('ffmpeg', [
     '-y', '-framerate', String(FPS),
     '-i', `${FRAMES_DIR}/frame_%04d.png`,
-    '-c:v', 'prores_ks', '-profile:v', '4444',
-    '-pix_fmt', 'yuva444p10le', '-vendor', 'apl0',
-    '-movflags', '+faststart', OUTPUT_MOV,
+    '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p',
+    '-b:v', '4M', '-crf', '18', '-deadline', 'good',
+    OUTPUT_MOV,
   ], { stdio: 'inherit' });
 
   if (result.status !== 0) { console.error('❌  ffmpeg failed'); process.exit(1); }
